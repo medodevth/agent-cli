@@ -440,6 +440,7 @@
     .app.sidebar-collapsed .profile { justify-content: center; padding: var(--sp-1) 0; flex: none; }
 
     .sidebar-backdrop { display: none; }
+    .panel-backdrop { display: none; }
 
     /* ---------------------------------------------------------------
        Main column
@@ -863,6 +864,45 @@
     .doc p { font-size: 13px; color: var(--text-dim); }
 
     /* ---------------------------------------------------------------
+       Extensions (skills / MCP / plugins)
+       --------------------------------------------------------------- */
+    .modal.wide { max-width: 720px; }
+    .ext-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--border-soft); padding: 0 var(--sp-4); }
+    .ext-tab {
+      appearance: none; background: none; border: 0; border-bottom: 2px solid transparent;
+      color: var(--text-mute); font: inherit; font-size: 13px; padding: var(--sp-2) var(--sp-3);
+      cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .ext-tab:hover { color: var(--text); }
+    .ext-tab.on { color: var(--text); border-bottom-color: var(--accent, var(--text)); }
+    .ext-pane { display: flex; flex-direction: column; gap: var(--sp-3); }
+    .ext-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+    .ext-item {
+      display: flex; align-items: flex-start; gap: var(--sp-3);
+      background: var(--bg-raised); border: 1px solid var(--border-soft);
+      border-radius: var(--radius); padding: 10px var(--sp-3);
+    }
+    .ext-item .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .ext-item .name { font-family: var(--mono); font-size: 12.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .ext-item .desc { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+    .ext-item .where { font-size: 11px; color: var(--text-mute); font-family: var(--mono); overflow-wrap: anywhere; }
+    .ext-item .actions { display: flex; gap: var(--sp-1); flex: none; }
+    .ext-empty { font-size: 12.5px; color: var(--text-mute); padding: var(--sp-2) 0; }
+    .ext-install { border-top: 1px solid var(--border-soft); padding-top: var(--sp-3); display: flex; flex-direction: column; gap: 6px; }
+    .ext-install .row { display: flex; gap: var(--sp-2); }
+    .ext-install .row .input { flex: 1; min-width: 0; }
+    .ext-install select.input { flex: none; width: auto; }
+    .ext-pre {
+      font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--text-dim);
+      background: var(--bg-input); border: 1px solid var(--border-soft); border-radius: var(--sp-2);
+      padding: var(--sp-3); max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .pill { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: var(--bg-hover); color: var(--text-mute); text-transform: uppercase; letter-spacing: .04em; }
+    .pill.ok { color: var(--ok); }
+    .pill.bad { color: var(--err); }
+    .pill.warn { color: var(--warn); }
+
+    /* ---------------------------------------------------------------
        Toasts
        --------------------------------------------------------------- */
     .toasts {
@@ -898,10 +938,31 @@
       }
     }
 
-    /* Collapse the chrome before the conversation column gets cramped. */
+    /* Collapse the chrome before the conversation column gets cramped. Past this
+       point the metrics panel is no longer a third grid column: it slides in
+       over the content as a right-hand drawer. Hiding it with display:none made
+       the Tools / Metrics buttons look broken on every screen under 1180px —
+       the click toggled the panel but nothing was ever painted. */
     @media (max-width: 1180px) {
       .app.with-panel { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
-      .panel { display: none; }
+      .panel {
+        position: fixed; top: 0; bottom: 0; right: 0; z-index: 30;
+        width: min(var(--panel-w), 90vw); max-width: 90vw;
+        background: var(--bg-drawer);
+        -webkit-backdrop-filter: blur(8px);
+        backdrop-filter: blur(8px);
+        box-shadow: 0 0 40px var(--shadow-modal);
+        transform: translateX(102%);
+        transition: transform var(--med) var(--ease);
+        animation: none;
+      }
+      .app.with-panel .panel { transform: none; }
+      .app.with-panel .panel-backdrop {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: var(--backdrop-bg);
+        -webkit-backdrop-filter: blur(8px);
+        backdrop-filter: blur(8px);
+      }
     }
     /* Below 900px the sidebar becomes an overlay drawer over a blurred backdrop. */
     @media (max-width: 900px) {
@@ -1124,6 +1185,7 @@
     </main>
 
     <!-- ===================== metrics panel ===================== -->
+    <div class="panel-backdrop" id="panelBackdrop" aria-hidden="true"></div>
     <aside class="panel" id="metricsPanel" hidden aria-label="Metrics">
       <div class="panel-head">
         <span>Metrics</span>
@@ -1134,6 +1196,7 @@
       <div class="panel-body">
         <div class="stat-grid">
           <div class="stat"><div class="stat-value" id="mTotal">0</div><div class="stat-label">Tool calls</div></div>
+          <div class="stat"><div class="stat-value" id="mCalls">—</div><div class="stat-label">Model calls</div></div>
           <div class="stat"><div class="stat-value" id="mSuccess">—</div><div class="stat-label">Success rate</div></div>
           <div class="stat"><div class="stat-value" id="mAvg">—</div><div class="stat-label">Avg duration</div></div>
           <div class="stat"><div class="stat-value" id="mIter">0</div><div class="stat-label">Iterations</div></div>
@@ -1271,10 +1334,96 @@
           <h3>File attachments</h3>
           <p>Click the paperclip icon to attach files or images. The agent can see images directly and read text files.</p>
         </section>
+        <section class="doc">
+          <h3>Tools, skills, MCP and plugins</h3>
+          <p>The Tools item in the sidebar opens the extensions hub. Paste a GitHub link and it installs whatever the folder contains: a skill (SKILL.md), a plugin (plugin.json) or MCP servers (mcp.json). MCP servers run as local child processes over stdio and their tools appear to the agent as mcp__server__tool. Everything is stored under .agent/ in this workspace.</p>
+        </section>
       </div>
       <div class="modal-foot">
         <span class="spacer"></span>
         <button class="btn primary" id="docsOk" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== extensions overlay ===================== -->
+  <div class="overlay" id="extOverlay" hidden>
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="extTitle">
+      <div class="modal-head">
+        <svg class="ico lg" aria-hidden="true"><use href="#i-wrench"></use></svg>
+        <h2 id="extTitle">Tools &amp; extensions</h2>
+        <button class="icon-btn" id="extClose" type="button" aria-label="Close extensions">
+          <svg class="ico lg" aria-hidden="true"><use href="#i-x"></use></svg>
+        </button>
+      </div>
+      <div class="ext-tabs" role="tablist" aria-label="Extension kind">
+        <button class="ext-tab on" id="extTabSkills" type="button" role="tab" aria-selected="true" data-pane="skills">
+          <svg class="ico sm" aria-hidden="true"><use href="#i-book-open"></use></svg>Skills
+          <span class="badge" id="extSkillCount">0</span>
+        </button>
+        <button class="ext-tab" id="extTabMcp" type="button" role="tab" aria-selected="false" data-pane="mcp">
+          <svg class="ico sm" aria-hidden="true"><use href="#i-terminal"></use></svg>MCP
+          <span class="badge" id="extMcpCount">0</span>
+        </button>
+        <button class="ext-tab" id="extTabPlugins" type="button" role="tab" aria-selected="false" data-pane="plugins">
+          <svg class="ico sm" aria-hidden="true"><use href="#i-database"></use></svg>Plugins
+          <span class="badge" id="extPluginCount">0</span>
+        </button>
+        <button class="ext-tab" id="extTabTools" type="button" role="tab" aria-selected="false" data-pane="tools">
+          <svg class="ico sm" aria-hidden="true"><use href="#i-wrench"></use></svg>Registered tools
+          <span class="badge" id="extToolCount">0</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="ext-pane" id="extPaneSkills">
+          <div class="ext-list" id="extSkills"></div>
+        </div>
+        <div class="ext-pane" id="extPaneMcp" hidden>
+          <div class="ext-list" id="extMcp"></div>
+          <div class="field-group">
+            <span class="field-label">Add an MCP server</span>
+            <div class="row" style="display:flex; gap:8px;">
+              <input class="input mono" id="mcpName" type="text" placeholder="name" autocomplete="off" spellcheck="false">
+              <input class="input mono" id="mcpCommand" type="text" placeholder="command, e.g. npx" autocomplete="off" spellcheck="false">
+            </div>
+            <input class="input mono" id="mcpArgs" type="text" placeholder="arguments, space separated (e.g. -y @modelcontextprotocol/server-filesystem /path)" autocomplete="off" spellcheck="false">
+            <div class="row" style="display:flex; gap:8px; align-items:center;">
+              <button class="btn" id="mcpAddBtn" type="button">Add &amp; connect</button>
+              <button class="btn" id="mcpReloadBtn" type="button">Reconnect all</button>
+              <span class="modal-msg" id="mcpMsg"></span>
+            </div>
+            <span class="hint">Servers run as local child processes over stdio. Config lives in <span class="mono" id="mcpConfigPath">.agent/mcp.json</span>.</span>
+          </div>
+        </div>
+        <div class="ext-pane" id="extPanePlugins" hidden>
+          <div class="ext-list" id="extPlugins"></div>
+        </div>
+        <div class="ext-pane" id="extPaneTools" hidden>
+          <div class="ext-list" id="extTools"></div>
+        </div>
+
+        <!-- one install box, shared by every tab -->
+        <div class="ext-install">
+          <span class="field-label">Install from GitHub</span>
+          <div class="row">
+            <input class="input mono" id="extUrl" type="text" placeholder="https://github.com/owner/repo/tree/main/skills/my-skill" autocomplete="off" spellcheck="false">
+            <select class="input" id="extKind" aria-label="What to install">
+              <option value="auto">Detect</option>
+              <option value="skill">Skill</option>
+              <option value="mcp">MCP servers</option>
+              <option value="plugin">Plugin</option>
+            </select>
+            <button class="btn primary" id="extInstallBtn" type="button">Install</button>
+          </div>
+          <span class="hint" id="extInstallHint">A skill needs SKILL.md, a plugin a plugin.json, MCP servers an mcp.json — at the repo root or the folder you point at.</span>
+          <span class="modal-msg" id="extMsg"></span>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <span class="modal-msg" id="extFootMsg"></span>
+        <span class="spacer"></span>
+        <button class="btn" id="extRefreshBtn" type="button">Refresh</button>
+        <button class="btn primary" id="extOk" type="button">Close</button>
       </div>
     </div>
   </div>
@@ -1306,10 +1455,11 @@
         settings: { model: '', baseUrl: '', hasApiKey: false, provider: 'anthropic', thinkingLevel: 'off' },
         tools: [],
         stats: {
-          totalCalls: 0, successCalls: 0, avgDuration: 0, iterations: 0,
+          totalCalls: 0, successCalls: 0, avgDuration: 0, iterations: 0, modelCalls: null,
           retries: null, cached: null, inputTokens: null, outputTokens: null, totalTokens: null
         },
         toolUsage: {},
+        ext: null,
         toolTimings: {},
         options: { cache: true, recovery: true, validation: true },
         thread: [],
@@ -1394,6 +1544,11 @@
       }
       function isNarrow() {
         try { return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 900px)').matches; }
+        catch (e) { return false; }
+      }
+      /** Same breakpoint the stylesheet uses to turn the metrics panel into a drawer. */
+      function panelIsDrawer() {
+        try { return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1180px)').matches; }
         catch (e) { return false; }
       }
       /**
@@ -1911,8 +2066,12 @@
           return;
         }
         if (ev.type === 'tokenUsage') {
-          applyTokens(ev);
-          setLiveTokens(ev.totalTokens);
+          // The frame carries this call's usage plus `session`, the running total
+          // for the agent. Prefer the total: painting the per-call slice made the
+          // panel look like it had thrown the earlier tokens away.
+          var session = ev.session && typeof ev.session.totalTokens === 'number' ? ev.session : null;
+          applyTokens(session || ev);
+          setLiveTokens(session ? session.totalTokens : ev.totalTokens);
           paintStats();
           return;
         }
@@ -1928,6 +2087,11 @@
         }
         if (ev.type === 'securityAlert') {
           appendLiveRow(ico('circle-alert', 'sm') + '<span class="live-name">security alert</span>', 'bad');
+          return;
+        }
+        if (ev.type === 'extensions') {
+          // The server installed / removed something; refresh the panel if it is open.
+          if (!$('extOverlay').hidden) loadExtensions();
         }
       }
       /** The run is over: stop listening, keep the last events readable for a beat. */
@@ -2050,6 +2214,9 @@
             setStatus('error', 'Error');
             toast(err.message, 'bad');
             finishActivityFeed();
+            // A failed run still burns tokens and can run tools before it dies,
+            // so re-read the server's totals instead of leaving the panel stale.
+            loadReport();
           })
           .then(function () {
             state.busy = false;
@@ -2083,6 +2250,7 @@
           if (typeof s.successCalls === 'number') state.stats.successCalls = s.successCalls;
           if (typeof s.avgDuration === 'number') state.stats.avgDuration = s.avgDuration;
           if (typeof s.iterations === 'number') state.stats.iterations = s.iterations;
+          if (typeof s.modelCalls === 'number') state.stats.modelCalls = s.modelCalls;
           if (s.retries !== undefined) state.stats.retries = typeof s.retries === 'number' ? s.retries : null;
           if (s.cacheHits !== undefined) state.stats.cached = typeof s.cacheHits === 'number' ? s.cacheHits : null;
         }
@@ -2106,6 +2274,7 @@
       function paintStats() {
         var s = state.stats;
         $('mTotal').textContent = String(s.totalCalls);
+        $('mCalls').textContent = fmtNumOrDash(s.modelCalls);
         $('mSuccess').textContent = s.totalCalls ? Math.round((s.successCalls / s.totalCalls) * 100) + '%' : '—';
         $('mAvg').textContent = s.totalCalls ? fmtDuration(s.avgDuration) : '—';
         $('mIter').textContent = String(s.iterations);
@@ -2160,7 +2329,8 @@
         box.innerHTML = '';
         [['input tokens', fmtNumOrDash(s.inputTokens)],
          ['output tokens', fmtNumOrDash(s.outputTokens)],
-         ['total tokens', fmtNumOrDash(s.totalTokens)]].forEach(function (row) {
+         ['total tokens', fmtNumOrDash(s.totalTokens)],
+         ['model calls', fmtNumOrDash(s.modelCalls)]].forEach(function (row) {
           box.appendChild(el('div', 'panel-row', '<span class="k">' + esc(row[0]) + '</span><span class="v">' + esc(row[1]) + '</span>'));
         });
       }
@@ -2196,7 +2366,8 @@
             applyStats({
               totalCalls: o.totalExecutions || 0,
               successCalls: o.totalSuccess || 0,
-              avgDuration: o.avgExecutionTime || 0
+              avgDuration: o.avgExecutionTime || 0,
+              modelCalls: typeof d.modelCalls === 'number' ? d.modelCalls : undefined
             }, null, null);
             applyTokens(d.usage);
             (d.slowestTools || []).forEach(function (t) {
@@ -2207,6 +2378,271 @@
             paintStats();
           })
           .catch(function () { /* keep the last known numbers */ });
+      }
+
+      /* ===================== extensions ===================== */
+      function extState() {
+        if (!state.ext) state.ext = { snapshot: null, tab: 'skills', busy: false, skill: null };
+        return state.ext;
+      }
+      function openExtensions() {
+        $('extOverlay').hidden = false;
+        loadExtensions();
+      }
+      function closeExtensions() { $('extOverlay').hidden = true; }
+      function loadExtensions() {
+        return fetch('/api/agent/extensions')
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            extState().snapshot = d;
+            paintExtensions();
+          })
+          .catch(function (e) { extMsg('Could not load extensions: ' + e.message, 'bad'); });
+      }
+      function extMsg(text, kind) {
+        var box = $('extMsg');
+        box.textContent = text || '';
+        box.className = 'modal-msg' + (kind ? ' ' + kind : '');
+      }
+      function pill(text, kind) {
+        return '<span class="pill' + (kind ? ' ' + kind : '') + '">' + esc(text) + '</span>';
+      }
+      function extItem(name, badges, desc, where, actions) {
+        var item = el('div', 'ext-item');
+        item.innerHTML =
+          '<div class="grow">' +
+          '<span class="name">' + esc(name) + (badges || '') + '</span>' +
+          (desc ? '<span class="desc">' + esc(desc) + '</span>' : '') +
+          (where ? '<span class="where">' + esc(where) + '</span>' : '') +
+          '</div>';
+        if (actions && actions.length) {
+          var box = el('div', 'actions');
+          actions.forEach(function (a) {
+            var btn = el('button', 'btn' + (a.danger ? ' danger' : ''), esc(a.label));
+            btn.type = 'button';
+            btn.onclick = a.onClick;
+            box.appendChild(btn);
+          });
+          item.appendChild(box);
+        }
+        return item;
+      }
+      function paintExtensions() {
+        var s = extState().snapshot;
+        if (!s) return;
+        $('extSkillCount').textContent = String((s.skills || []).length);
+        $('extMcpCount').textContent = String((s.mcp || []).length);
+        $('extPluginCount').textContent = String((s.plugins || []).length);
+        $('extToolCount').textContent = String((s.tools || []).length);
+        if (s.dirs) $('mcpConfigPath').textContent = s.dirs.mcpConfig || '.agent/mcp.json';
+        paintSkills(s);
+        paintMcp(s);
+        paintPlugins(s);
+        paintRegisteredTools(s);
+        paintExtTab();
+      }
+      /** Tab key -> id suffix; the keys match each tab's `data-pane`. */
+      var EXT_TAB_IDS = { skills: 'Skills', mcp: 'Mcp', plugins: 'Plugins', tools: 'Tools' };
+      function paintExtTab() {
+        var tab = extState().tab;
+        Object.keys(EXT_TAB_IDS).forEach(function (kind) {
+          var suffix = EXT_TAB_IDS[kind];
+          var pane = $('extPane' + suffix);
+          if (pane) pane.hidden = (tab !== kind);
+          var btn = $('extTab' + suffix);
+          if (btn) {
+            btn.classList.toggle('on', tab === kind);
+            btn.setAttribute('aria-selected', tab === kind ? 'true' : 'false');
+          }
+        });
+      }
+      function paintSkills(s) {
+        var box = $('extSkills');
+        box.innerHTML = '';
+        var skills = s.skills || [];
+        if (!skills.length) {
+          box.appendChild(el('div', 'ext-empty', 'No skills installed yet. Paste a GitHub link to a folder with a SKILL.md below.'));
+          return;
+        }
+        skills.forEach(function (skill) {
+          var badges = pill(skill.source && skill.source.kind === 'github' ? 'github' : 'local', skill.source && skill.source.kind === 'github' ? 'ok' : '');
+          var where = (skill.files || 0) + ' files · ' + fmtBytes(skill.bytes || 0) + (skill.source && skill.source.repo ? ' · ' + skill.source.repo + (skill.source.path ? '/' + skill.source.path : '') : '');
+          box.appendChild(extItem(skill.name, badges, skill.description, where, [
+            { label: 'View', onClick: function () { viewSkill(skill.name); } },
+            { label: 'Remove', danger: true, onClick: function () { removeExtension('skill', skill.name); } },
+          ]));
+        });
+      }
+      function paintMcp(s) {
+        var box = $('extMcp');
+        box.innerHTML = '';
+        var servers = s.mcp || [];
+        if (!servers.length) {
+          box.appendChild(el('div', 'ext-empty', 'No MCP servers configured. Add one below, or install a repo that ships an mcp.json.'));
+          return;
+        }
+        servers.forEach(function (server) {
+          var kind = server.status === 'connected' ? 'ok' : server.status === 'error' ? 'bad' : 'warn';
+          var badges = pill(server.status, kind) + (server.tools && server.tools.length ? pill(server.tools.length + ' tools', 'ok') : '');
+          var where = server.command + (server.args && server.args.length ? ' ' + server.args.join(' ') : '');
+          var actions = [
+            { label: 'Reconnect', onClick: function () { reloadMcp(server.name); } },
+            { label: 'Remove', danger: true, onClick: function () { removeExtension('mcp', server.name); } },
+          ];
+          box.appendChild(extItem(server.name, badges, server.error || where, server.error ? where : '', actions));
+        });
+      }
+      function paintPlugins(s) {
+        var box = $('extPlugins');
+        box.innerHTML = '';
+        var plugins = s.plugins || [];
+        if (!plugins.length) {
+          box.appendChild(el('div', 'ext-empty', 'No plugins installed. A plugin is a folder with a plugin.json and an entry module that exports tools.'));
+          return;
+        }
+        plugins.forEach(function (plugin) {
+          var badges = pill(plugin.loaded ? 'loaded' : plugin.error ? 'error' : 'installed', plugin.loaded ? 'ok' : plugin.error ? 'bad' : 'warn') +
+            (plugin.source && plugin.source.kind === 'github' ? pill('github', 'ok') : '');
+          var where = 'v' + plugin.version + ' · ' + plugin.entry + (plugin.tools && plugin.tools.length ? ' · ' + plugin.tools.join(', ') : '');
+          var actions = [
+            { label: plugin.loaded ? 'Reload' : 'Load', onClick: function () { loadPlugin(plugin.name); } },
+            { label: 'Remove', danger: true, onClick: function () { removeExtension('plugin', plugin.name); } },
+          ];
+          box.appendChild(extItem(plugin.name, badges, plugin.error || plugin.description, where, actions));
+        });
+      }
+      function paintRegisteredTools(s) {
+        var box = $('extTools');
+        box.innerHTML = '';
+        var tools = s.tools || [];
+        if (!tools.length) {
+          box.appendChild(el('div', 'ext-empty', 'The agent has not reported any tools yet.'));
+          return;
+        }
+        var groups = { mcp: [], plugin: [], builtin: [] };
+        tools.forEach(function (name) {
+          if (name.indexOf('mcp__') === 0) groups.mcp.push(name);
+          else if (name.indexOf('plugin') >= 0) groups.plugin.push(name);
+          else groups.builtin.push(name);
+        });
+        var section = function (title, names, kind) {
+          if (!names.length) return;
+          box.appendChild(el('div', 'panel-title', esc(title) + ' (' + names.length + ')'));
+          names.forEach(function (name) {
+            box.appendChild(extItem(name, kind ? pill(kind, 'ok') : '', '', '', []));
+          });
+        };
+        section('Built-in', groups.builtin, '');
+        section('MCP', groups.mcp, 'mcp');
+        section('Plugins', groups.plugin, 'plugin');
+      }
+      function viewSkill(name) {
+        fetch('/api/agent/extensions/skills/' + encodeURIComponent(name))
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (r) {
+            if (!r.ok) throw new Error(r.data.error || 'Could not read the skill');
+            extState().skill = name;
+            var box = $('extSkills');
+            box.innerHTML = '';
+            var head = el('div', 'panel-title', 'SKILL.md · ' + esc(name) + ' · ' + esc((r.data.files || []).length) + ' files');
+            box.appendChild(head);
+            box.appendChild(el('pre', 'ext-pre', esc(r.data.content || '')));
+            var back = el('button', 'btn', 'Back to skills');
+            back.type = 'button';
+            back.onclick = function () { paintSkills(extState().snapshot || {}); };
+            box.appendChild(back);
+          })
+          .catch(function (e) { extMsg(e.message, 'bad'); });
+      }
+      function installExtension() {
+        var st = extState();
+        if (st.busy) return;
+        var url = $('extUrl').value.trim();
+        if (!url) { extMsg('Paste a GitHub URL first.', 'bad'); return; }
+        var kind = $('extKind').value;
+        st.busy = true;
+        $('extInstallBtn').disabled = true;
+        extMsg('Installing…');
+        fetch('/api/agent/extensions/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url, kind: kind === 'auto' ? undefined : kind }),
+        })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (r) {
+            if (!r.ok) throw new Error(r.data.error || 'Install failed');
+            var d = r.data;
+            st.snapshot = d.snapshot || st.snapshot;
+            paintExtensions();
+            $('extUrl').value = '';
+            extMsg('Installed ' + d.kind + ' "' + d.name + '" (' + d.files + ' files)', 'ok');
+            toast('Installed ' + d.kind + ': ' + d.name, 'ok');
+          })
+          .catch(function (e) { extMsg(e.message, 'bad'); })
+          .then(function () {
+            st.busy = false;
+            $('extInstallBtn').disabled = false;
+          });
+      }
+      function addMcpServer() {
+        var name = $('mcpName').value.trim();
+        var command = $('mcpCommand').value.trim();
+        var args = $('mcpArgs').value.trim();
+        if (!name || !command) { $('mcpMsg').textContent = 'Name and command are required.'; return; }
+        $('mcpMsg').textContent = 'Connecting…';
+        fetch('/api/agent/extensions/mcp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name, command: command, args: args ? args.split(/\s+/) : [] }),
+        })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (r) {
+            if (!r.ok) throw new Error(r.data.error || 'Could not add the server');
+            extState().snapshot = r.data.snapshot || extState().snapshot;
+            $('mcpName').value = ''; $('mcpCommand').value = ''; $('mcpArgs').value = '';
+            $('mcpMsg').textContent = '';
+            paintExtensions();
+            toast('MCP server added', 'ok');
+          })
+          .catch(function (e) { $('mcpMsg').textContent = e.message; });
+      }
+      function reloadMcp(name) {
+        $('mcpMsg').textContent = name ? 'Reconnecting ' + name + '…' : 'Reconnecting all servers…';
+        fetch('/api/agent/extensions/mcp/reload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(name ? { name: name } : {}),
+        })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (r) {
+            if (!r.ok) throw new Error(r.data.error || 'Reload failed');
+            extState().snapshot = r.data.snapshot || extState().snapshot;
+            $('mcpMsg').textContent = '';
+            paintExtensions();
+          })
+          .catch(function (e) { $('mcpMsg').textContent = e.message; });
+      }
+      function loadPlugin(name) {
+        fetch('/api/agent/extensions/plugins/' + encodeURIComponent(name) + '/load', { method: 'POST' })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (r) {
+            if (!r.ok) throw new Error(r.data.error || 'Could not load the plugin');
+            extState().snapshot = r.data.snapshot || extState().snapshot;
+            paintExtensions();
+            toast('Plugin loaded: ' + name, 'ok');
+          })
+          .catch(function (e) { extMsg(e.message, 'bad'); });
+      }
+      function removeExtension(kind, name) {
+        fetch('/api/agent/extensions/' + encodeURIComponent(kind) + '/' + encodeURIComponent(name), { method: 'DELETE' })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (r) {
+            if (!r.ok) throw new Error(r.data.error || 'Could not remove it');
+            extState().snapshot = r.data.snapshot || extState().snapshot;
+            paintExtensions();
+            toast('Removed ' + kind + ': ' + name, 'ok');
+          })
+          .catch(function (e) { extMsg(e.message, 'bad'); });
       }
 
       /* ===================== settings ===================== */
@@ -2518,7 +2954,7 @@
         }
       };
       $('searchInput').addEventListener('input', function () { state.filter = this.value; renderHistory(); });
-      $('navTools').onclick = function () { $('panelBtn').click(); };
+      $('navTools').onclick = openExtensions;
       $('navHelp').onclick = openDocs;
       $('chipCache').onclick = function () { toggleChip('cache'); };
       $('chipRecovery').onclick = function () { toggleChip('recovery'); };
@@ -2558,14 +2994,32 @@
       $('docsClose').onclick = closeDocs;
       $('docsOk').onclick = closeDocs;
       $('docsOverlay').addEventListener('click', function (e) { if (e.target === this) closeDocs(); });
+      $('extClose').onclick = closeExtensions;
+      $('extOk').onclick = closeExtensions;
+      $('extRefreshBtn').onclick = function () { loadExtensions(); };
+      $('extInstallBtn').onclick = installExtension;
+      $('mcpAddBtn').onclick = addMcpServer;
+      $('mcpReloadBtn').onclick = function () { reloadMcp(); };
+      $('extOverlay').addEventListener('click', function (e) { if (e.target === this) closeExtensions(); });
+      $('extUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); installExtension(); } });
+      Array.prototype.forEach.call(document.querySelectorAll('.ext-tab'), function (tab) {
+        tab.onclick = function () {
+          extState().tab = tab.getAttribute('data-pane');
+          paintExtTab();
+        };
+      });
       $('panelBtn').onclick = function () {
         var open = $('metricsPanel').hidden;
         $('metricsPanel').hidden = !open;
         $('app').classList.toggle('with-panel', open);
         this.classList.toggle('on', open);
         this.setAttribute('aria-expanded', open ? 'true' : 'false');
+        // Under 1180px the panel is a drawer over the content, so the sidebar
+        // drawer and the panel must not both be open at once.
+        if (open && panelIsDrawer()) $('app').classList.remove('sidebar-open');
         if (open) loadReport();
       };
+      $('panelBackdrop').onclick = function () { $('panelClose').click(); };
       $('panelClose').onclick = function () {
         $('metricsPanel').hidden = true;
         $('app').classList.remove('with-panel');
@@ -2578,7 +3032,7 @@
           .then(function () {
             newChat();
             state.stats = {
-              totalCalls: 0, successCalls: 0, avgDuration: 0, iterations: 0,
+              totalCalls: 0, successCalls: 0, avgDuration: 0, iterations: 0, modelCalls: null,
               retries: null, cached: null, inputTokens: null, outputTokens: null, totalTokens: null
             };
             state.toolUsage = {};
@@ -2605,6 +3059,7 @@
         if (meta && e.key === ',') { e.preventDefault(); openSettings(); }
         if (e.key === 'Escape') {
           if (!$('modelPopover').hidden) closeModelPopover();
+          else if (!$('extOverlay').hidden) closeExtensions();
           else if (!$('docsOverlay').hidden) closeDocs();
           else if (!$('settingsOverlay').hidden) closeSettings();
           else if (!$('metricsPanel').hidden) $('panelClose').click();
@@ -2622,6 +3077,7 @@
           $('toolCount').textContent = state.tools.length ? String(state.tools.length) : '';
           paintProvider();
           if (d.usage) { applyTokens(d.usage); paintStats(); }
+          if (typeof d.modelCalls === 'number') { state.stats.modelCalls = d.modelCalls; paintStats(); }
           setStatus(d.status === 'not_initialized' ? 'error' : 'ready', d.status === 'not_initialized' ? 'No model' : 'Ready');
         })
         .catch(function () {

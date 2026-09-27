@@ -7,6 +7,7 @@ import { Agent } from './agent/Agent.js';
 import { createProvider } from './createAgent.js';
 import { createDefaultToolRegistry } from './tools/index.js';
 import { Action, PermissionManager, PermissionResult, Config, ContentBlock } from './types/index.js';
+import { ExtensionManager, ExtensionKind, isExtensionError } from './extensions/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -113,6 +114,13 @@ let agent: Agent | null = null;
 let config: Config;
 let requestInProgress = false;
 
+/**
+ * Skills, MCP servers and plugins all live under the workspace's `.agent`
+ * directory, so the manager is created once from the process working directory
+ * and reused across agent rebuilds.
+ */
+const extensions = new ExtensionManager(process.cwd());
+
 export type ProviderName = 'anthropic' | 'openai';
 export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
 
@@ -176,6 +184,15 @@ const MAX_BUFFERED_EVENTS = 50;
 const eventBuffer: Array<Record<string, unknown>> = [];
 const subscribers = new Set<Response>();
 
+/**
+ * How many times the model itself has been called (one per agent iteration that
+ * reached the provider), plus the total tokens it reported. The agent counts
+ * tokens but not calls, and "how many calls did that cost me" is the first thing
+ * anyone asks of a metrics panel, so it is counted here where every provider
+ * response passes through.
+ */
+let modelCalls = 0;
+
 /** Fans one agent event out to every open SSE stream (and into the replay buffer). */
 function broadcast(event: Record<string, unknown>): void {
   const payload = { at: Date.now(), ...event };
@@ -197,7 +214,10 @@ function attachAgentListeners(instance: Agent): void {
     retryCount: execution.retryCount ?? 0, success: execution.result?.success !== false,
     cached: execution.result?.cached === true, error: execution.result?.error ?? null,
   }));
-  instance.on('tokenUsage', (usage: { inputTokens: number; outputTokens: number; totalTokens: number }) => broadcast({ type: 'tokenUsage', ...usage, session: instance.getUsage() }));
+  instance.on('tokenUsage', (usage: { inputTokens: number; outputTokens: number; totalTokens: number }) => {
+    modelCalls += 1;
+    broadcast({ type: 'tokenUsage', ...usage, session: instance.getUsage() });
+  });
   instance.on('providerRetry', (info: { attempt: number; maxRetries: number; waitMs: number; error: string }) => broadcast({ type: 'providerRetry', ...info }));
   instance.on('contextCompressed', (stats: unknown) => broadcast({ type: 'contextCompressed', stats }));
   instance.on('specialtyRouted', (info: { entered?: unknown[]; exited?: unknown[]; active?: unknown[] }) => broadcast({ type: 'specialty', entered: info.entered ?? [], exited: info.exited ?? [], active: info.active ?? [] }));
@@ -220,6 +240,13 @@ function initializeAgent(): Agent {
   };
   agent = new Agent(createProvider(config, apiKey), createDefaultToolRegistry(), new ServerPermissionManager(allowMutations), config);
   attachAgentListeners(agent);
+  // A fresh agent starts with empty usage totals, so the call counter restarts too.
+  modelCalls = 0;
+  // MCP servers are child processes: connect them in the background so a slow or
+  // unreachable server cannot delay the HTTP listener coming up.
+  void extensions.activate(agent.getToolRegistry()).catch((error) => {
+    console.error('Extension activation failed:', error);
+  });
   return agent;
 }
 function getAgent(): Agent { return agent || initializeAgent(); }
@@ -290,7 +317,7 @@ app.post('/api/agent/run', async (req, res) => {
       stats: {
         totalCalls: report.overview.totalExecutions, successCalls: report.overview.totalSuccess,
         avgDuration: report.overview.avgExecutionTime, iterations: state.iterationCount,
-        retries, cacheHits,
+        retries, cacheHits, modelCalls,
       },
       usage: currentAgent.getUsage(),
       toolUsage,
@@ -303,12 +330,13 @@ app.post('/api/agent/run', async (req, res) => {
 
 app.get('/api/agent/status', (_req, res) => {
   const provider = { model: settings.model, provider: settings.provider, thinkingLevel: settings.thinkingLevel };
-  if (!agent) { res.json({ status: 'not_initialized', tools: [], ...provider, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }); return; }
+  if (!agent) { res.json({ status: 'not_initialized', tools: [], ...provider, modelCalls: 0, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }); return; }
   const state = agent.getState();
   res.json({
     status: state.status, ...provider,
     tools: agent.getToolRegistry().list().map(t => ({ name: t.name, description: t.description })),
     iterations: state.iterationCount, historyLength: state.history.length, usage: agent.getUsage(),
+    modelCalls,
   });
 });
 
@@ -379,15 +407,120 @@ app.put('/api/agent/settings', (req, res) => {
   if (body.clearApiKey === true) settings.apiKey = '';
 
   // Rebuild lazily so the next request uses the new endpoint/model/credentials.
+  // The rebuilt agent gets a fresh registry, so MCP servers and plugins have to
+  // be detached from the old one first or their child processes would leak.
+  if (agent) extensions.deactivate(agent.getToolRegistry());
   agent = null;
   persistSettings(settings);
   res.json(publicSettings());
 });
-app.get('/api/agent/report', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const report = agent.getPerformanceMonitor().generateReport(); res.json({ overview: report.overview, slowestTools: report.slowestTools, mostUnreliable: report.mostUnreliable, recommendations: report.recommendations, usage: agent.getUsage() }); });
+app.get('/api/agent/report', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const report = agent.getPerformanceMonitor().generateReport(); res.json({ overview: report.overview, slowestTools: report.slowestTools, mostUnreliable: report.mostUnreliable, recommendations: report.recommendations, usage: agent.getUsage(), modelCalls }); });
 app.get('/api/agent/metrics/:toolName', (req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const metrics = agent.getPerformanceMonitor().getToolMetrics(req.params.toolName); if (!metrics) { res.status(404).json({ error: 'Tool not found' }); return; } res.json({ ...metrics, errorTypes: Array.from(metrics.errorTypes.entries()) }); });
 app.get('/api/agent/export', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } res.setHeader('Content-Type', 'application/json'); res.setHeader('Content-Disposition', `attachment; filename=agent-metrics-${Date.now()}.json`); res.send(agent.exportPerformanceData()); });
-app.post('/api/agent/clear', (_req, res) => { if (!agent) { res.status(404).json({ error: 'Agent not initialized' }); return; } agent.reset(); broadcast({ type: 'reset' }); res.json({ success: true }); });
+app.post('/api/agent/clear', (_req, res) => { if (!agent) { res.status(404).json({ error: 'Agent not initialized' }); return; } agent.reset(); modelCalls = 0; broadcast({ type: 'reset' }); res.json({ success: true }); });
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+/* ---------------- extensions: skills, MCP servers, plugins ---------------- */
+
+const EXTENSION_KINDS: ExtensionKind[] = ['skill', 'mcp', 'plugin'];
+
+/** Everything the Extensions panel renders, in one round trip. */
+app.get('/api/agent/extensions', (_req, res) => {
+  res.json(extensions.snapshot(agent?.getToolRegistry()));
+});
+
+/** Raw SKILL.md, for the viewer. */
+app.get('/api/agent/extensions/skills/:name', (req, res) => {
+  try {
+    res.json({ name: req.params.name, content: extensions.readSkill(req.params.name), files: extensions.skills.files(req.params.name) });
+  } catch (error) {
+    res.status(404).json({ error: (error as Error).message });
+  }
+});
+
+/**
+ * Install from GitHub. The body decides what gets installed: an explicit `kind`,
+ * or whatever the downloaded files look like (SKILL.md / plugin.json / mcp.json).
+ */
+app.post('/api/agent/extensions/install', async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.url !== 'string' || !body.url.trim()) { res.status(400).json({ error: 'url is required' }); return; }
+  if (body.kind !== undefined && !EXTENSION_KINDS.includes(body.kind as ExtensionKind)) {
+    res.status(400).json({ error: 'kind must be "skill", "mcp" or "plugin"' }); return;
+  }
+  if (body.name !== undefined && typeof body.name !== 'string') { res.status(400).json({ error: 'name must be a string' }); return; }
+  try {
+    const result = await extensions.installFromGitHub(body.url.trim(), {
+      kind: body.kind as ExtensionKind | undefined,
+      name: typeof body.name === 'string' && body.name.trim() ? body.name.trim() : undefined,
+      overwrite: body.overwrite === true,
+      registry: getAgent().getToolRegistry(),
+    });
+    broadcast({ type: 'extensions', action: 'install', kind: result.kind, name: result.name });
+    res.json({ ...result, snapshot: extensions.snapshot(agent?.getToolRegistry()) });
+  } catch (error) {
+    res.status(isExtensionError(error) ? 400 : 502).json({ error: (error as Error).message });
+  }
+});
+
+/** Add one MCP server by hand, then connect it. */
+app.post('/api/agent/extensions/mcp', async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.name !== 'string' || !body.name.trim()) { res.status(400).json({ error: 'name is required' }); return; }
+  if (typeof body.command !== 'string' || !body.command.trim()) { res.status(400).json({ error: 'command is required' }); return; }
+  if (body.args !== undefined && !Array.isArray(body.args)) { res.status(400).json({ error: 'args must be an array of strings' }); return; }
+  if (body.env !== undefined && (typeof body.env !== 'object' || body.env === null || Array.isArray(body.env))) {
+    res.status(400).json({ error: 'env must be an object of strings' }); return;
+  }
+  try {
+    await extensions.addMcpServer({
+      name: body.name.trim(),
+      command: body.command.trim(),
+      args: Array.isArray(body.args) ? body.args.map(String) : [],
+      env: body.env as Record<string, string> | undefined,
+      enabled: body.enabled !== false,
+    }, getAgent().getToolRegistry());
+    broadcast({ type: 'extensions', action: 'mcp-added', name: body.name });
+    res.json({ snapshot: extensions.snapshot(agent?.getToolRegistry()) });
+  } catch (error) {
+    res.status(isExtensionError(error) ? 400 : 500).json({ error: (error as Error).message });
+  }
+});
+
+/** Reconnect one server (or all of them) after editing its config by hand. */
+app.post('/api/agent/extensions/mcp/reload', async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (body.name !== undefined && typeof body.name !== 'string') { res.status(400).json({ error: 'name must be a string' }); return; }
+  try {
+    await extensions.mcp.reload(body.name as string | undefined, getAgent().getToolRegistry());
+    res.json({ snapshot: extensions.snapshot(agent?.getToolRegistry()) });
+  } catch (error) {
+    res.status(isExtensionError(error) ? 400 : 500).json({ error: (error as Error).message });
+  }
+});
+
+app.delete('/api/agent/extensions/:kind/:name', async (req, res) => {
+  const kind = req.params.kind as ExtensionKind;
+  if (!EXTENSION_KINDS.includes(kind)) { res.status(400).json({ error: 'kind must be "skill", "mcp" or "plugin"' }); return; }
+  try {
+    await extensions.remove(kind, req.params.name, getAgent().getToolRegistry());
+    broadcast({ type: 'extensions', action: 'removed', kind, name: req.params.name });
+    res.json({ snapshot: extensions.snapshot(agent?.getToolRegistry()) });
+  } catch (error) {
+    res.status(isExtensionError(error) ? 400 : 500).json({ error: (error as Error).message });
+  }
+});
+
+/** Load a plugin that is installed but not yet imported (or retry a failed one). */
+app.post('/api/agent/extensions/plugins/:name/load', async (req, res) => {
+  try {
+    const plugin = await extensions.plugins.load(req.params.name, getAgent().getToolRegistry());
+    res.json({ plugin, snapshot: extensions.snapshot(agent?.getToolRegistry()) });
+  } catch (error) {
+    res.status(isExtensionError(error) ? 400 : 500).json({ error: (error as Error).message });
+  }
+});
+
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error('Server error:', err);
   const tooLarge = typeof err === 'object' && err !== null && (err as { type?: string }).type === 'entity.too.large';

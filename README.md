@@ -12,6 +12,7 @@ Autonomous AI coding agent for your terminal — it plans, edits files, runs com
 - **Three-layer memory** — separates temporary session notes, workspace project knowledge, and user-wide preferences; never stores secrets
 - **Live TUI** — streaming output, tool activity feed, token usage bar, command history
 - **Two interfaces** — classic readline REPL (`agent chat`) or Ink UI (`agent-ui`)
+- **Extensible** — install skills, MCP servers and plugins from a GitHub URL in the web UI
 
 ## Install
 
@@ -238,6 +239,41 @@ no network access and under a strict `default-src 'none'` policy. The Mitr webfo
 (SIL OFL) is vendored into `public/fonts/` and self-hosted, so Thai text renders
 correctly without contacting a font CDN.
 
+### Extensions: skills, MCP servers and plugins
+
+The sidebar's **Tools** item opens an extensions hub backed by the workspace's
+`.agent/` directory. Paste a GitHub URL and the server downloads the folder and
+installs whatever it contains — the kind is sniffed from the payload:
+
+| Payload | Installed as | Where it lands |
+| --- | --- | --- |
+| `SKILL.md` | skill (instructions the agent reads on demand) | `.agent/skills/<name>/` |
+| `plugin.json` | plugin (a module that exports tools) | `.agent/plugins/<name>/` |
+| `mcp.json` | one or more MCP servers | merged into `.agent/mcp.json` |
+
+```
+GET    /api/agent/extensions                 # skills + MCP servers + plugins + tools
+GET    /api/agent/extensions/skills/:name    # raw SKILL.md for the viewer
+POST   /api/agent/extensions/install         # { url, kind?, name?, overwrite? }
+POST   /api/agent/extensions/mcp             # { name, command, args?, env? } -> connect
+POST   /api/agent/extensions/mcp/reload      # { name? } -> reconnect one or all
+POST   /api/agent/extensions/plugins/:name/load
+DELETE /api/agent/extensions/:kind/:name
+```
+
+MCP servers run as local child processes and speak JSON-RPC 2.0 over stdio
+(`initialize` → `tools/list` → `tools/call`). Each tool is registered as
+`mcp__<server>__<tool>`, so a server can never shadow a built-in tool. A server
+that fails to start is reported with its stderr tail and does not stop the
+others. Plugins are imported with `await import()` and may export `tools`, a
+single `tool`, or a `register(registry)` function; a plugin can never replace an
+existing tool name. Installation only writes files — nothing is executed until
+you load it.
+
+Downloads go through the GitHub API (no clone, no tarball), skipping binary and
+oversized files, with path-traversal checks on every written path. Set
+`GITHUB_TOKEN` to raise the anonymous rate limit.
+
 ## Development
 
 ```bash
@@ -258,6 +294,7 @@ src/
 ├── security/       # Permission modes, command policy, sandbox, scanners, backups
 ├── ui/             # Ink TUI (header, chat, input, status bar)
 ├── config/         # Config loader (global + project + env)
+├── extensions/     # Skills, MCP client/manager, plugin store, GitHub installer
 ├── types/          # Shared types
 ├── createAgent.ts  # Wires provider + tools + permissions into an Agent
 ├── cli.ts          # readline entry (agent chat | run | init | doctor)

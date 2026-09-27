@@ -41,6 +41,16 @@ const ASSISTANT_REPLY = [
 
 type ApiCall = { url: string; method: string; body?: any };
 
+/** A server extension snapshot, so each test can override just the part it cares about. */
+function extensionSnapshot(overrides: Record<string, any> = {}) {
+  return {
+    skills: [], mcp: [], plugins: [],
+    tools: ['read_file', 'write_file'],
+    dirs: { skills: '/tmp/.agent/skills', plugins: '/tmp/.agent/plugins', mcpConfig: '/tmp/.agent/mcp.json' },
+    ...overrides,
+  };
+}
+
 async function bootUi(options?: { seedStorage?: Record<string, string> }) {
   const calls: ApiCall[] = [];
   const settings: Record<string, any> = {
@@ -56,6 +66,7 @@ async function bootUi(options?: { seedStorage?: Record<string, string> }) {
     for (const [k, v] of Object.entries(options.seedStorage)) stored.set(k, v);
   }
   let failNextRun = false;
+  let failNextInstall = false;
 
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (e: Error) => { throw e; });
@@ -118,15 +129,35 @@ async function bootUi(options?: { seedStorage?: Record<string, string> }) {
         }
         if (u.includes('/api/agent/status')) {
           return respond({
-            status: 'idle', model: 'claude-sonnet-4', provider: 'anthropic',
+            status: 'idle', model: '', provider: 'anthropic',
             tools: Array.from({ length: 66 }, (_, i) => ({ name: 'tool_' + i, description: '' })),
             iterations: 0, historyLength: 0,
           });
         }
         if (u.includes('/api/agent/report')) {
-          return respond({ overview: { totalExecutions: 2, totalSuccess: 2, avgExecutionTime: 40 }, slowestTools: [] });
+          return respond({ overview: { totalExecutions: 2, totalSuccess: 2, avgExecutionTime: 40 }, slowestTools: [], modelCalls: 7 });
         }
         if (u.includes('/api/agent/clear')) return respond({ success: true });
+        if (u.includes('/api/agent/extensions/skills/')) {
+          return respond({ name: 'demo', content: '---\nname: demo\n---\n\n# Demo skill\n', files: ['SKILL.md'] });
+        }
+        if (u.includes('/api/agent/extensions/install')) {
+          if (failNextInstall) { failNextInstall = false; return respondBad({ error: 'Nothing installable at that URL' }); }
+          return respond({
+            kind: 'skill', name: 'demo', files: 2, installed: ['SKILL.md'],
+            snapshot: extensionSnapshot({ skills: [{ name: 'demo', description: 'A demo skill', path: '/tmp/skills/demo', files: 2, bytes: 120, source: { kind: 'github', repo: 'o/r' } }] }),
+          });
+        }
+        if (u.includes('/api/agent/extensions/mcp')) {
+          return respond({ snapshot: extensionSnapshot({ mcp: [{ name: 'fake', command: 'node', args: ['server.mjs'], enabled: true, status: 'connected', tools: ['echo'] }] }) });
+        }
+        if (u.includes('/api/agent/extensions/plugins/')) {
+          return respond({ plugin: { name: 'demo' }, snapshot: extensionSnapshot() });
+        }
+        if (u.includes('/api/agent/extensions/')) {
+          return respond({ snapshot: extensionSnapshot() });
+        }
+        if (u.includes('/api/agent/extensions')) return respond(extensionSnapshot());
         return respond({});
       };
 
@@ -160,6 +191,7 @@ async function bootUi(options?: { seedStorage?: Record<string, string> }) {
   return {
     window: dom.window, doc, $, tick, click, submit, type, calls, settings,
     fail: () => { failNextRun = true; },
+    failInstall: () => { failNextInstall = true; },
     emitEvent: (payload: any) => (dom.window as any).__eventSource?.emit(payload),
     openEventSource: () => (dom.window as any).__eventSource,
   };
@@ -562,6 +594,69 @@ describe('web UI (agent-ui.html)', () => {
     expect(doc.querySelectorAll('.stat').length).toBeGreaterThanOrEqual(9);
   });
 
+  it('counts model calls in the panel and the token detail', async () => {
+    const { $, doc, submit, type, tick, click } = await bootUi();
+    type('hi');
+    submit();
+    await tick(4);
+    click($('panelBtn'));
+    await tick(2);
+    // The server counts one model call per provider round trip and reports it on
+    // both /report and /run; the panel must not leave the stat blank.
+    expect($('mCalls').textContent).toBe('7');
+    expect($('tokenInfo').textContent).toMatch(/model calls/);
+    expect(doc.querySelectorAll('.stat').length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('keeps the running token total when the server sends per-call usage', async () => {
+    // Regression guard: the SSE frame carries this call's slice *and* the running
+    // session total. Painting the slice made the panel look like it had forgotten
+    // every earlier call.
+    const { $, submit, type, tick, openEventSource } = await bootUi();
+    type('go');
+    submit();
+    await tick(1);
+    const es = openEventSource();
+    es.emit({ type: 'tokenUsage', inputTokens: 900, outputTokens: 100, totalTokens: 1000, session: { inputTokens: 900, outputTokens: 100, totalTokens: 1000 } });
+    await tick(1);
+    expect($('mTotalTokens').textContent).toBe('1,000');
+    es.emit({ type: 'tokenUsage', inputTokens: 40, outputTokens: 10, totalTokens: 50, session: { inputTokens: 940, outputTokens: 110, totalTokens: 1050 } });
+    await tick(1);
+    expect($('mTotalTokens').textContent).toBe('1,050');
+    expect($('mInput').textContent).toBe('940');
+    expect($('mOutput').textContent).toBe('110');
+    expect($('liveTokens').textContent).toBe('1,050 tokens');
+  });
+
+  it('shows the metrics panel as a drawer instead of hiding it under 1180px', async () => {
+    // Regression guard: `.panel { display: none }` at <=1180px meant the Tools and
+    // Metrics buttons toggled state that was never painted on a phone or a small
+    // laptop window.
+    const { $, tick, click } = await bootUi();
+    expect(html).toMatch(/\.app\.with-panel \.panel \{ transform: none; \}/);
+    expect(html).not.toMatch(/@media \(max-width: 1180px\)[\s\S]*?\.panel \{ display: none; \}/);
+    expect(html).toMatch(/\.app\.with-panel \.panel-backdrop/);
+    click($('panelBtn'));
+    await tick(2);
+    expect($('app').className).toContain('with-panel');
+    // The backdrop closes the drawer, like the sidebar's does.
+    click($('panelBackdrop'));
+    await tick(1);
+    expect($('metricsPanel').hidden).toBe(true);
+    expect($('app').className).not.toContain('with-panel');
+  });
+
+  it('refreshes the metrics after a failed run', async () => {
+    const { $, calls, tick, submit, type, fail } = await bootUi();
+    fail();
+    type('boom');
+    submit();
+    await tick(4);
+    expect($('statusPill').className).toContain('error');
+    // A failed run still costs tokens and may have run tools first.
+    expect(calls.filter(c => c.url.includes('/api/agent/report')).length).toBeGreaterThan(0);
+  });
+
   it('puts the profile and its settings key button at the bottom-left', async () => {
     const { $, doc, click, tick } = await bootUi();
     const foot = doc.querySelector('.side-foot')!;
@@ -571,6 +666,128 @@ describe('web UI (agent-ui.html)', () => {
     click($('profileKeyBtn'));
     await tick(1);
     expect($('settingsOverlay').hidden).toBe(false);
+  });
+
+  it('opens the extensions hub from the Tools button and lists what is installed', async () => {
+    const { $, doc, tick, click } = await bootUi();
+    // The Tools nav item used to just open the metrics panel; it is now the
+    // place where skills, MCP servers and plugins are managed.
+    click($('navTools'));
+    await tick(3);
+    expect($('extOverlay').hidden).toBe(false);
+    expect($('extTitle').textContent).toMatch(/Tools/);
+    expect($('extSkillCount').textContent).toBe('0');
+    expect($('extToolCount').textContent).toBe('2');
+    expect($('extSkills').textContent).toMatch(/No skills installed yet/);
+    expect($('extTools').textContent).toMatch(/read_file/);
+    expect($('mcpConfigPath').textContent).toMatch(/mcp\.json/);
+
+    // Tabs switch panes. Every pane id is plural while the kind is not — the
+    // mismatch is easy to introduce and leaves two panes visible at once.
+    click($('extTabMcp'));
+    await tick(1);
+    expect($('extPaneMcp').hidden).toBe(false);
+    expect($('extPaneSkills').hidden).toBe(true);
+    expect($('extTabMcp').className).toContain('on');
+    expect($('extTabSkills').className).not.toContain('on');
+
+    click($('extTabPlugins'));
+    await tick(1);
+    expect($('extPanePlugins').hidden).toBe(false);
+    expect($('extPaneMcp').hidden).toBe(true);
+
+    click($('extTabTools'));
+    await tick(1);
+    expect($('extPaneTools').hidden).toBe(false);
+    expect($('extPanePlugins').hidden).toBe(true);
+
+    click($('extTabSkills'));
+    await tick(1);
+    expect($('extPaneSkills').hidden).toBe(false);
+    expect($('extPaneTools').hidden).toBe(true);
+
+    click($('extOk'));
+    expect($('extOverlay').hidden).toBe(true);
+  });
+
+  it('installs an extension from a GitHub URL and shows the result', async () => {
+    const { $, doc, calls, tick, click } = await bootUi();
+    click($('navTools'));
+    await tick(3);
+    $('extUrl').value = 'https://github.com/o/r/tree/main/skills/demo';
+    $('extKind').value = 'auto';
+    click($('extInstallBtn'));
+    await tick(3);
+
+    const install = calls.filter(c => c.url.includes('/api/agent/extensions/install')).pop()!;
+    expect(install.method).toBe('POST');
+    expect(install.body.url).toBe('https://github.com/o/r/tree/main/skills/demo');
+    expect(install.body.kind).toBeUndefined(); // "Detect" leaves the choice to the server
+    expect($('extMsg').textContent).toMatch(/Installed skill "demo"/);
+    expect($('extSkillCount').textContent).toBe('1');
+    expect($('extSkills').textContent).toMatch(/demo/);
+    expect(doc.querySelectorAll('.toast').length).toBeGreaterThan(0);
+  });
+
+  it('sends an explicit kind when the user picks one, and surfaces a failed install', async () => {
+    const { $, tick, click, failInstall } = await bootUi();
+    click($('navTools'));
+    await tick(3);
+    failInstall();
+    $('extUrl').value = 'https://github.com/o/r';
+    $('extKind').value = 'plugin';
+    click($('extInstallBtn'));
+    await tick(3);
+    expect($('extMsg').textContent).toMatch(/Nothing installable/);
+    expect($('extMsg').className).toContain('bad');
+  });
+
+  it('refuses to install without a URL', async () => {
+    const { $, tick, click } = await bootUi();
+    click($('navTools'));
+    await tick(3);
+    click($('extInstallBtn'));
+    await tick(1);
+    expect($('extMsg').textContent).toMatch(/Paste a GitHub URL/);
+  });
+
+  it('adds an MCP server with name, command and arguments', async () => {
+    const { $, calls, tick, click } = await bootUi();
+    click($('navTools'));
+    await tick(3);
+    click($('extTabMcp'));
+    await tick(1);
+    $('mcpName').value = 'fake';
+    $('mcpCommand').value = 'node';
+    $('mcpArgs').value = 'server.mjs --flag';
+    click($('mcpAddBtn'));
+    await tick(3);
+
+    const add = calls.filter(c => c.url.endsWith('/api/agent/extensions/mcp')).pop()!;
+    expect(add.method).toBe('POST');
+    expect(add.body).toEqual({ name: 'fake', command: 'node', args: ['server.mjs', '--flag'] });
+    expect($('extMcp').textContent).toMatch(/connected/);
+    expect($('extMcpCount').textContent).toBe('1');
+    expect($('mcpName').value).toBe('');
+  });
+
+  it('shows a skill\'s SKILL.md in the viewer', async () => {
+    const { $, doc, tick, click } = await bootUi();
+    click($('navTools'));
+    await tick(3);
+    // Install first so there is a skill row with a View button.
+    $('extUrl').value = 'https://github.com/o/r/tree/main/skills/demo';
+    click($('extInstallBtn'));
+    await tick(3);
+    const view = Array.from(doc.querySelectorAll('#extSkills button') as any).find((b: any) => /View/.test(b.textContent!)) as any;
+    expect(view).toBeDefined();
+    click(view);
+    await tick(2);
+    expect($('extSkills').querySelector('.ext-pre')!.textContent).toMatch(/Demo skill/);
+    const back = Array.from(doc.querySelectorAll('#extSkills button') as any).find((b: any) => /Back/.test(b.textContent!)) as any;
+    click(back);
+    await tick(1);
+    expect($('extSkills').querySelector('.ext-pre')).toBeNull();
   });
 
   it('declares Thai-capable fonts and uses them in the stack', () => {

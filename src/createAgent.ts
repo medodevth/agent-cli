@@ -9,10 +9,10 @@ import { Config } from './types/index.js';
 /** Picks the provider implementation named in the config. */
 export function createProvider(config: Config, apiKey: string): AIProvider {
   if (config.provider === 'anthropic') {
-    return new AnthropicProvider(apiKey, { baseUrl: config.baseUrl, model: config.model });
+    return new AnthropicProvider(apiKey, { baseUrl: config.baseUrl, model: config.model, thinkingLevel: config.thinkingLevel });
   }
   if (config.provider === 'openai') {
-    return new OpenAIProvider(apiKey, { baseUrl: config.baseUrl, model: config.model });
+    return new OpenAIProvider(apiKey, { baseUrl: config.baseUrl, model: config.model, thinkingLevel: config.thinkingLevel });
   }
   throw new Error(`Unsupported provider: ${config.provider}`);
 }

@@ -179,6 +179,65 @@ Do not expose the server directly to the public internet. Put authentication and
 front of it before using a non-local bind address. The server requires a real
 `ANTHROPIC_API_KEY`; it never falls back to a demo key.
 
+### Web UI
+
+The server also serves a single-page chat UI at `http://127.0.0.1:3000/` (open
+`/agent-ui.html` directly if you front the server with your own router). It carries
+a collapsible, resizable sidebar; a dark/light theme; tool activity cards; code
+blocks; chat history in `localStorage`; and a metrics panel fed by
+`/api/agent/report`.
+
+Provider settings can be edited from the gear icon in the sidebar footer — or from
+the channel popover in the header (provider + model + reasoning level) — without
+restarting:
+
+- `GET /api/agent/settings` → `{ model, baseUrl, hasApiKey, provider, thinkingLevel }`
+- `PUT /api/agent/settings` → `{ model?, baseUrl?, apiKey?, clearApiKey?, provider?, thinkingLevel? }`
+
+The API key is held in memory for the lifetime of the process and is never written
+to disk, logged, or echoed back (only the `hasApiKey` boolean is reported).
+Switching provider drops the in-memory key unless the environment already carries
+one for the newly selected provider.
+
+The non-secret half of the configuration — provider, model, base URL and reasoning
+level — is persisted to `.agent/ui-settings.json` (gitignored) so a restart resumes
+the same channel. That file contains no key material; the environment remains the
+source of truth for the credential. Changing any setting drops the current agent so
+the next request rebuilds it.
+
+`thinkingLevel` is `off | low | medium | high`. Anthropic maps it to an extended-
+thinking token budget (1024 / 4096 / 16384) and OpenAI maps it to
+`reasoning_effort`; the budget is added on top of `max_tokens` as the Messages API
+requires.
+
+### Attachments
+
+`POST /api/agent/run` accepts an optional `attachments` array:
+
+```json
+{ "message": "review these", "attachments": [{ "name": "shot.png", "mimeType": "image/png", "data": "<base64>" }] }
+```
+
+Up to 8 files, 8 MB each (12 MB request body). Images (`png`, `jpeg`, `gif`, `webp`)
+are forwarded to the model as native image blocks; anything else is inlined as UTF-8
+text when it decodes cleanly and under 200 KB, otherwise it is summarised by name and
+size so the model can fetch it with a file tool.
+
+### Live activity (SSE)
+
+`GET /api/agent/events` is a Server-Sent Events stream that mirrors the agent's own
+emitter: `toolStart`, `toolEnd` (with duration, retries, cache hit), `tokenUsage`,
+`providerRetry`, `contextCompressed`, `specialtyRouted`, `securityAlert` and
+`status`. The UI renders the tool list live while a run is in flight instead of
+waiting for the reply. The last 50 events are replayed to a stream that connects
+late. Payloads carry no credentials or environment values.
+
+The UI carries its own icon set: Lucide symbols are inlined into the HTML by
+`npm run ui:icons` (from the `lucide-static` dev dependency) so the page works with
+no network access and under a strict `default-src 'none'` policy. The Mitr webfont
+(SIL OFL) is vendored into `public/fonts/` and self-hosted, so Thai text renders
+correctly without contacting a font CDN.
+
 ## Development
 
 ```bash

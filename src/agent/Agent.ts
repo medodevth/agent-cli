@@ -111,7 +111,7 @@ export class Agent extends EventEmitter {
     for (const tool of toolRegistry.list()) {
       if (tool instanceof ProjectMemoryTool) tool.noteSink = this.notes;
     }
-    this.state = { status: 'idle', history: [], conversationMessages: [], iterationCount: 0, metadata: {} };
+    this.state = { status: 'idle', history: [], conversationMessages: [], iterationCount: 0, metadata: { usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } };
   }
 
   /** Queues a follow-on task into the three-tier engine (critical/normal/background). */
@@ -173,7 +173,7 @@ export class Agent extends EventEmitter {
     this.killSwitch = false;
   }
 
-  async run(userMessage: string): Promise<string> {
+  async run(userMessage: string, attachments: ContentBlock[] = []): Promise<string> {
     if (this.killSwitch) throw new AgentError('Agent is killed — call revive() to start a new session', 'AGENT_KILLED');
     this.killSwitch = false;
     this.abortController = new AbortController();
@@ -191,7 +191,11 @@ export class Agent extends EventEmitter {
     // state.history (audit), notes, and the rolling digest, never in a
     // leftover conversation array inherited from a previous failed run.
     this.state.conversationMessages = [];
-    this.addMessage({ role: 'user', content: buildBootInstructions(userMessage), timestamp: new Date() });
+    this.addMessage({
+      role: 'user',
+      content: attachments.length ? [{ type: 'text', text: buildBootInstructions(userMessage) }, ...attachments] : buildBootInstructions(userMessage),
+      timestamp: new Date(),
+    });
     let finalResponse = '';
     const providerRetries = Math.max(0, this.config.providerRetries ?? 3);
     let completed = false;
@@ -232,10 +236,19 @@ export class Agent extends EventEmitter {
 
         const response = await this.chatWithRetry({
           messages: this.state.conversationMessages, temperature: this.config.temperature, maxTokens: 8192,
+          thinkingLevel: this.config.thinkingLevel,
           systemPrompt: this.buildSystemPrompt() + specialtySection,
           tools: this.toolRouter.select(userMessage, this.toolRegistry.getSchemas()), toolChoice: 'auto',
         }, providerRetries);
-        if (response.usage) this.emit('tokenUsage', response.usage);
+        if (response.usage) {
+          const previous = (this.state.metadata.usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined) ?? {};
+          this.state.metadata.usage = {
+            inputTokens: (previous.inputTokens ?? 0) + response.usage.inputTokens,
+            outputTokens: (previous.outputTokens ?? 0) + response.usage.outputTokens,
+            totalTokens: (previous.totalTokens ?? 0) + response.usage.totalTokens,
+          };
+          this.emit('tokenUsage', response.usage);
+        }
         if (response.content) finalResponse = response.content;
         if (response.toolCalls?.length) {
           this.setStatus('executing');
@@ -495,6 +508,9 @@ export class Agent extends EventEmitter {
   private addMessage(message: ChatMessage): void { this.state.conversationMessages.push(message); this.emit('message', message); }
   private setStatus(status: AgentState['status']): void { this.state.status = status; this.emit('status', status); }
   updateConfig(partial: Partial<Config>): void { this.config = { ...this.config, ...partial }; this.provider.setModel?.(this.config.model); }
+  getUsage(): { inputTokens: number; outputTokens: number; totalTokens: number } {
+    return this.state.metadata.usage as { inputTokens: number; outputTokens: number; totalTokens: number } || { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  }
   getState(): AgentState { return structuredClone(this.state); }
   getToolRegistry(): ToolRegistry { return this.toolRegistry; }
   getPerformanceMonitor(): ToolPerformanceMonitor { return this.performanceMonitor; }

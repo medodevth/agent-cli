@@ -1,11 +1,12 @@
 import express, { NextFunction, Request, Response } from 'express';
 import path from 'path';
+import fs from 'fs';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { Agent } from './agent/Agent.js';
-import { AnthropicProvider } from './providers/AnthropicProvider.js';
+import { createProvider } from './createAgent.js';
 import { createDefaultToolRegistry } from './tools/index.js';
-import { Action, PermissionManager, PermissionResult, Config } from './types/index.js';
+import { Action, PermissionManager, PermissionResult, Config, ContentBlock } from './types/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,7 +20,9 @@ const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 const ALLOWED_ORIGINS = process.env.AGENT_SERVER_ORIGIN?.split(',').map(origin => origin.trim()).filter(Boolean);
 
 app.use(cors(ALLOWED_ORIGINS ? { origin: ALLOWED_ORIGINS } : { origin: false }));
-app.use(express.json({ limit: '1mb' }));
+// Attachments travel in the request body as base64, so the JSON limit has to sit
+// comfortably above the per-request attachment budget (see MAX_ATTACHMENT_BYTES).
+app.use(express.json({ limit: '12mb' }));
 
 // Baseline security headers, registered before the static handler so documents
 // (not just API responses) actually receive them. The API keeps a locked-down
@@ -30,6 +33,7 @@ const UI_CSP = [
   "default-src 'none'",
   "style-src 'unsafe-inline'",
   "script-src 'unsafe-inline'",
+  "font-src 'self'",
   "img-src 'self' data:",
   "connect-src 'self'",
   "base-uri 'none'",
@@ -55,6 +59,7 @@ app.get('/', (_req: Request, res: Response) => { res.redirect('/agent-ui.html');
 app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
   console.log(`[agent-server] ${new Date().toISOString()} ${ip} ${req.method} ${req.path}`);
+  res.setHeader('Cache-Control', 'no-store');
   next();
 });
 
@@ -63,7 +68,7 @@ function isLoopback(host: string): boolean {
 }
 
 function securityMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const supplied = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.header('x-api-key');
+  const supplied = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.header('x-api-key') || (typeof req.query.token === 'string' ? req.query.token : undefined);
   if (!API_KEY && !isLoopback(HOST)) {
     res.status(503).json({ error: 'Server authentication is not configured' });
     return;
@@ -108,33 +113,162 @@ let agent: Agent | null = null;
 let config: Config;
 let requestInProgress = false;
 
+export type ProviderName = 'anthropic' | 'openai';
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
+
+const SETTINGS_DIR = path.join(process.cwd(), '.agent');
+const SETTINGS_FILE = path.join(SETTINGS_DIR, 'ui-settings.json');
+
+/**
+ * Runtime provider settings. The environment seeds them at boot and the settings
+ * endpoint can override them for the lifetime of the process. Non-secret fields
+ * (provider / model / base URL / thinking level) are remembered in
+ * `.agent/ui-settings.json` so the UI comes back the way it was left; the
+ * credential itself is never written to disk and never echoed to a client —
+ * only whether one is present is reported.
+ */
+interface ProviderSettings { provider: ProviderName; model: string; baseUrl: string; apiKey: string; thinkingLevel: ThinkingLevel }
+
+function readPersistedSettings(): Partial<ProviderSettings> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) as Record<string, unknown>;
+    const out: Partial<ProviderSettings> = {};
+    if (raw.provider === 'anthropic' || raw.provider === 'openai') out.provider = raw.provider;
+    if (typeof raw.model === 'string') out.model = raw.model;
+    if (typeof raw.baseUrl === 'string') out.baseUrl = raw.baseUrl;
+    if (raw.thinkingLevel === 'off' || raw.thinkingLevel === 'low' || raw.thinkingLevel === 'medium' || raw.thinkingLevel === 'high') out.thinkingLevel = raw.thinkingLevel;
+    return out;
+  } catch { return {}; }
+}
+
+/** Writes the non-secret subset back so a restart resumes the same channel. */
+function persistSettings(settings: ProviderSettings): void {
+  try {
+    fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify({
+      provider: settings.provider, model: settings.model, baseUrl: settings.baseUrl, thinkingLevel: settings.thinkingLevel,
+    }, null, 2) + '\n', 'utf8');
+  } catch (error) {
+    console.error('Could not persist UI settings:', error);
+  }
+}
+
+const persisted = readPersistedSettings();
+const settings: ProviderSettings = {
+  provider: persisted.provider ?? (process.env.AGENT_PROVIDER === 'openai' ? 'openai' : 'anthropic'),
+  model: persisted.model || process.env.ANTHROPIC_MODEL || process.env.OPENAI_MODEL || '',
+  baseUrl: persisted.baseUrl || process.env.ANTHROPIC_BASE_URL || process.env.OPENAI_BASE_URL || '',
+  apiKey: process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || '',
+  thinkingLevel: persisted.thinkingLevel ?? 'off',
+};
+
+function envKeyFor(provider: ProviderName): string {
+  return provider === 'openai' ? process.env.OPENAI_API_KEY || '' : process.env.ANTHROPIC_API_KEY || '';
+}
+
+function publicSettings(): { provider: ProviderName; model: string; baseUrl: string; hasApiKey: boolean; thinkingLevel: ThinkingLevel } {
+  return { provider: settings.provider, model: settings.model, baseUrl: settings.baseUrl, hasApiKey: Boolean(settings.apiKey), thinkingLevel: settings.thinkingLevel };
+}
+
+/* ---------------- live activity feed (Server-Sent Events) ---------------- */
+
+const MAX_BUFFERED_EVENTS = 50;
+const eventBuffer: Array<Record<string, unknown>> = [];
+const subscribers = new Set<Response>();
+
+/** Fans one agent event out to every open SSE stream (and into the replay buffer). */
+function broadcast(event: Record<string, unknown>): void {
+  const payload = { at: Date.now(), ...event };
+  eventBuffer.push(payload);
+  if (eventBuffer.length > MAX_BUFFERED_EVENTS) eventBuffer.shift();
+  const frame = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const res of subscribers) {
+    try { res.write(frame); } catch { subscribers.delete(res); }
+  }
+}
+
+/** Mirrors the agent's own emitter into the feed (sanitised, no secrets). */
+function attachAgentListeners(instance: Agent): void {
+  instance.on('iteration', (n: number, max: number) => broadcast({ type: 'iteration', iteration: n, maxIterations: max }));
+  instance.on('status', (status: string) => broadcast({ type: 'status', status }));
+  instance.on('toolStart', (call: { id: string; name: string; input: unknown }) => broadcast({ type: 'toolStart', id: call.id, tool: call.name, input: call.input }));
+  instance.on('toolEnd', (execution: { tool: string; duration?: number; retryCount?: number; result?: { success?: boolean; cached?: boolean; error?: string } }) => broadcast({
+    type: 'toolEnd', tool: execution.tool, duration: execution.duration ?? null,
+    retryCount: execution.retryCount ?? 0, success: execution.result?.success !== false,
+    cached: execution.result?.cached === true, error: execution.result?.error ?? null,
+  }));
+  instance.on('tokenUsage', (usage: { inputTokens: number; outputTokens: number; totalTokens: number }) => broadcast({ type: 'tokenUsage', ...usage, session: instance.getUsage() }));
+  instance.on('providerRetry', (info: { attempt: number; maxRetries: number; waitMs: number; error: string }) => broadcast({ type: 'providerRetry', ...info }));
+  instance.on('contextCompressed', (stats: unknown) => broadcast({ type: 'contextCompressed', stats }));
+  instance.on('specialtyRouted', (info: { entered?: unknown[]; exited?: unknown[]; active?: unknown[] }) => broadcast({ type: 'specialty', entered: info.entered ?? [], exited: info.exited ?? [], active: info.active ?? [] }));
+  instance.on('securityAlert', (info: unknown) => broadcast({ type: 'securityAlert', info }));
+}
+
 function initializeAgent(): Agent {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is required to start the agent server');
-  // Honour the env contract the SDK and the CLI already use, so a relay or proxy
-  // endpoint (and the model name it serves) works without editing this file.
-  const model = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
-  const baseUrl = process.env.ANTHROPIC_BASE_URL || undefined;
+  if (!settings.apiKey) throw new Error('An API key is required to start the agent server (set ANTHROPIC_API_KEY or configure one in the UI)');
+  const apiKey = settings.apiKey;
+  const model = settings.model;
+  const baseUrl = settings.baseUrl || undefined;
   const allowMutations = process.env.AGENT_SERVER_ALLOW_MUTATIONS === 'true';
   config = {
-    provider: 'anthropic', model, apiKey,
+    provider: settings.provider, model, apiKey, baseUrl,
+    thinkingLevel: settings.thinkingLevel,
     permissionMode: allowMutations ? 'auto' : 'safe', maxIterations: 20, temperature: 0.7,
     workspaceRoot: process.cwd(), debug: false, enableToolRetry: true, maxToolRetries: 3,
     enableToolCache: true, toolTimeout: 30000, validateToolInputs: true, autoRecovery: true,
     strictToolCalling: true, toolRouterMaxTools: 12, toolQueueConcurrency: 1, serverApiKey: API_KEY,
   };
-  agent = new Agent(new AnthropicProvider(apiKey, { model, baseUrl }), createDefaultToolRegistry(), new ServerPermissionManager(allowMutations), config);
+  agent = new Agent(createProvider(config, apiKey), createDefaultToolRegistry(), new ServerPermissionManager(allowMutations), config);
+  attachAgentListeners(agent);
   return agent;
 }
 function getAgent(): Agent { return agent || initializeAgent(); }
 function publicError(error: unknown): string { return process.env.NODE_ENV === 'development' && error instanceof Error ? error.message : 'Agent request failed'; }
 
+/* ---------------- attachments ---------------- */
+
+const MAX_ATTACHMENTS = 8;
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const TEXT_ATTACHMENT_LIMIT = 200 * 1024;
+const IMAGE_MIME = /^image\/(png|jpeg|jpg|gif|webp)$/i;
+
+type RawAttachment = { name?: unknown; mimeType?: unknown; data?: unknown };
+
+/**
+ * Turns client-supplied attachments into provider content blocks. Images stay
+ * base64 (both providers accept inline images); anything else is inlined as text
+ * when it decodes as UTF-8 text, and otherwise summarised by name and size so the
+ * model at least knows the file exists.
+ */
+function toContentBlocks(raw: RawAttachment[]): ContentBlock[] {
+  const blocks: ContentBlock[] = [];
+  for (const item of raw.slice(0, MAX_ATTACHMENTS)) {
+    const name = typeof item.name === 'string' ? path.basename(item.name).slice(0, 200) : 'attachment';
+    const mimeType = typeof item.mimeType === 'string' ? item.mimeType : 'application/octet-stream';
+    if (typeof item.data !== 'string' || !item.data) continue;
+    const buffer = Buffer.from(item.data, 'base64');
+    if (!buffer.length || buffer.length > MAX_ATTACHMENT_BYTES) continue;
+    if (IMAGE_MIME.test(mimeType)) {
+      const media = mimeType.toLowerCase() === 'image/jpg' ? 'image/jpeg' : mimeType.toLowerCase();
+      blocks.push({ type: 'image', fileName: name, mimeType: media, source: { type: 'base64', media_type: media, data: buffer.toString('base64') } });
+      continue;
+    }
+    const isText = !buffer.includes(0) && buffer.length <= TEXT_ATTACHMENT_LIMIT;
+    const body = isText ? buffer.toString('utf8') : `[binary file, ${buffer.length} bytes — read it with the file tools if needed]`;
+    blocks.push({ type: 'file', fileName: name, mimeType, content: body });
+  }
+  return blocks;
+}
+
+
 app.post('/api/agent/run', async (req, res) => {
   try {
-    const { message, config: clientConfig } = req.body;
+    const { message, config: clientConfig, attachments } = req.body ?? {};
     if (typeof message !== 'string' || !message.trim()) { res.status(400).json({ error: 'Message must be a non-empty string' }); return; }
     if (message.length > 100_000) { res.status(413).json({ error: 'Message is too large (maximum 100000 characters)' }); return; }
     if (clientConfig !== undefined && (typeof clientConfig !== 'object' || clientConfig === null || Array.isArray(clientConfig))) { res.status(400).json({ error: 'config must be an object' }); return; }
+    if (attachments !== undefined && !Array.isArray(attachments)) { res.status(400).json({ error: 'attachments must be an array' }); return; }
+    const contentBlocks = Array.isArray(attachments) ? toContentBlocks(attachments as RawAttachment[]) : [];
     if (requestInProgress) { res.status(409).json({ error: 'Another agent request is already in progress' }); return; }
     requestInProgress = true;
     const currentAgent = getAgent();
@@ -144,25 +278,121 @@ app.post('/api/agent/run', async (req, res) => {
       debug: clientConfig.debug ?? false,
     });
     const startTime = Date.now();
-    const response = await currentAgent.run(message);
+    const response = await currentAgent.run(message, contentBlocks);
     const state = currentAgent.getState();
     const report = currentAgent.getPerformanceMonitor().generateReport();
     const toolUsage: Record<string, number> = {};
     state.history.forEach(exec => { toolUsage[exec.tool] = (toolUsage[exec.tool] || 0) + 1; });
-    res.json({ response, duration: Date.now() - startTime, toolExecutions: state.history.slice(-10), stats: { totalCalls: report.overview.totalExecutions, successCalls: report.overview.totalSuccess, avgDuration: report.overview.avgExecutionTime, iterations: state.iterationCount }, toolUsage });
+    const retries = state.history.reduce((sum, exec) => sum + (exec.retryCount ?? 0), 0);
+    const cacheHits = state.history.filter(exec => exec.result?.cached).length;
+    res.json({
+      response, duration: Date.now() - startTime, toolExecutions: state.history.slice(-10),
+      stats: {
+        totalCalls: report.overview.totalExecutions, successCalls: report.overview.totalSuccess,
+        avgDuration: report.overview.avgExecutionTime, iterations: state.iterationCount,
+        retries, cacheHits,
+      },
+      usage: currentAgent.getUsage(),
+      toolUsage,
+    });
   } catch (error) {
     console.error('Agent error:', error);
     res.status(500).json({ error: publicError(error), ...(process.env.NODE_ENV === 'development' && error instanceof Error ? { stack: error.stack } : {}) });
   } finally { requestInProgress = false; }
 });
 
-app.get('/api/agent/status', (_req, res) => { const provider = config ? { model: config.model, provider: config.provider } : {}; if (!agent) { res.json({ status: 'not_initialized', tools: [], ...provider }); return; } const state = agent.getState(); res.json({ status: state.status, ...provider, tools: agent.getToolRegistry().list().map(t => ({ name: t.name, description: t.description })), iterations: state.iterationCount, historyLength: state.history.length }); });
-app.get('/api/agent/report', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const report = agent.getPerformanceMonitor().generateReport(); res.json({ overview: report.overview, slowestTools: report.slowestTools, mostUnreliable: report.mostUnreliable, recommendations: report.recommendations }); });
+app.get('/api/agent/status', (_req, res) => {
+  const provider = { model: settings.model, provider: settings.provider, thinkingLevel: settings.thinkingLevel };
+  if (!agent) { res.json({ status: 'not_initialized', tools: [], ...provider, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }); return; }
+  const state = agent.getState();
+  res.json({
+    status: state.status, ...provider,
+    tools: agent.getToolRegistry().list().map(t => ({ name: t.name, description: t.description })),
+    iterations: state.iterationCount, historyLength: state.history.length, usage: agent.getUsage(),
+  });
+});
+
+/**
+ * Live activity feed (Server-Sent Events). The browser subscribes with
+ * EventSource, which cannot send headers, so a configured API key travels as a
+ * query parameter here; everything else about the endpoint matches the rest of
+ * the authenticated /api/agent surface.
+ */
+app.get('/api/agent/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  subscribers.add(res);
+  res.write(`data: ${JSON.stringify({ type: 'hello', at: Date.now(), replay: eventBuffer.slice(-10), status: agent ? agent.getState().status : 'idle' })}\n\n`);
+  const keepAlive = setInterval(() => { try { res.write(': keep-alive\n\n'); } catch { /* stream closed */ } }, 20000);
+  // Never hold the event loop open on account of an idle subscriber.
+  keepAlive.unref?.();
+  req.on('close', () => { clearInterval(keepAlive); subscribers.delete(res); });
+});
+
+/** Provider settings (base URL / model / API key) as configured for this process. */
+app.get('/api/agent/settings', (_req, res) => { res.json(publicSettings()); });
+
+app.put('/api/agent/settings', (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const invalid = (message: string): null => { res.status(400).json({ error: message }); return null; };
+  // Returns the trimmed string, or null for "absent" — a validation failure has
+  // already sent its response by then, so the caller only checks `null`.
+  const readField = (field: keyof ProviderSettings, max: number): string | null => {
+    const value = body[field];
+    if (value === undefined) return null;
+    if (typeof value !== 'string') return invalid(`${field} must be a string`);
+    const trimmed = value.trim();
+    if (trimmed.length > max) return invalid(`${field} is too long (max ${max} characters)`);
+    if (/[\r\n]/.test(trimmed)) return invalid(`${field} must not contain line breaks`);
+    return trimmed;
+  };
+
+  const model = readField('model', 200);
+  if (res.headersSent) return;
+  const baseUrl = readField('baseUrl', 500);
+  if (res.headersSent) return;
+  const apiKey = readField('apiKey', 500);
+  if (res.headersSent) return;
+  if (body.clearApiKey !== undefined && typeof body.clearApiKey !== 'boolean') { invalid('clearApiKey must be a boolean'); return; }
+  if (body.provider !== undefined && body.provider !== 'anthropic' && body.provider !== 'openai') { invalid('provider must be "anthropic" or "openai"'); return; }
+  if (body.thinkingLevel !== undefined && typeof body.thinkingLevel !== 'string') { invalid('thinkingLevel must be a string'); return; }
+  if (typeof body.thinkingLevel === 'string' && !['off', 'low', 'medium', 'high'].includes(body.thinkingLevel)) { invalid('thinkingLevel must be "off", "low", "medium" or "high"'); return; }
+  if (baseUrl) {
+    let parsed: URL;
+    try { parsed = new URL(baseUrl); } catch { invalid('baseUrl must be a valid absolute URL'); return; }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { invalid('baseUrl must use http or https'); return; }
+  }
+
+  if (body.provider === 'anthropic' || body.provider === 'openai') {
+    // Switching channels drops a key that belonged to the other one, unless the
+    // environment already carries a key for the new provider.
+    if (body.provider !== settings.provider) settings.apiKey = envKeyFor(body.provider);
+    settings.provider = body.provider;
+  }
+  if (model !== null) settings.model = model;
+  if (baseUrl !== null) settings.baseUrl = baseUrl;
+  if (apiKey) settings.apiKey = apiKey;
+  if (typeof body.thinkingLevel === 'string') settings.thinkingLevel = body.thinkingLevel as ThinkingLevel;
+  if (body.clearApiKey === true) settings.apiKey = '';
+
+  // Rebuild lazily so the next request uses the new endpoint/model/credentials.
+  agent = null;
+  persistSettings(settings);
+  res.json(publicSettings());
+});
+app.get('/api/agent/report', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const report = agent.getPerformanceMonitor().generateReport(); res.json({ overview: report.overview, slowestTools: report.slowestTools, mostUnreliable: report.mostUnreliable, recommendations: report.recommendations, usage: agent.getUsage() }); });
 app.get('/api/agent/metrics/:toolName', (req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const metrics = agent.getPerformanceMonitor().getToolMetrics(req.params.toolName); if (!metrics) { res.status(404).json({ error: 'Tool not found' }); return; } res.json({ ...metrics, errorTypes: Array.from(metrics.errorTypes.entries()) }); });
 app.get('/api/agent/export', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } res.setHeader('Content-Type', 'application/json'); res.setHeader('Content-Disposition', `attachment; filename=agent-metrics-${Date.now()}.json`); res.send(agent.exportPerformanceData()); });
-app.post('/api/agent/clear', (_req, res) => { if (!agent) { res.status(404).json({ error: 'Agent not initialized' }); return; } agent.reset(); res.json({ success: true }); });
+app.post('/api/agent/clear', (_req, res) => { if (!agent) { res.status(404).json({ error: 'Agent not initialized' }); return; } agent.reset(); broadcast({ type: 'reset' }); res.json({ success: true }); });
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => { console.error('Server error:', err); res.status(500).json({ error: 'Internal server error' }); });
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('Server error:', err);
+  const tooLarge = typeof err === 'object' && err !== null && (err as { type?: string }).type === 'entity.too.large';
+  res.status(tooLarge ? 413 : 500).json({ error: tooLarge ? 'Request body is too large (12mb maximum)' : 'Internal server error' });
+});
 
 if (process.env.NODE_ENV !== 'test') app.listen(PORT, HOST, () => { console.log(`Agent CLI Web Server running at http://localhost:${PORT}`); try { initializeAgent(); } catch (error) { console.error('Failed to initialize agent:', error); } });
 export default app;

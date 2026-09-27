@@ -1,8 +1,10 @@
 // Core type definitions for the agent system
+/** Reasoning effort requested from providers that support extended thinking. */
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
 export interface ChatMessage { role: 'user' | 'assistant' | 'system'; content: string | ContentBlock[]; timestamp?: Date; toolCalls?: ToolCall[]; }
-export interface ContentBlock { type: 'text' | 'tool_use' | 'tool_result'; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string; is_error?: boolean; }
+export interface ContentBlock { type: 'text' | 'tool_use' | 'tool_result' | 'image' | 'file'; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string; is_error?: boolean; source?: { type: 'base64'; media_type: string; data: string }; fileName?: string; mimeType?: string; }
 export interface ToolSchema { name: string; description: string; input_schema: { type: 'object'; properties: Record<string, unknown>; required?: string[]; [key: string]: unknown; }; }
-export interface ChatRequest { messages: ChatMessage[]; temperature?: number; maxTokens?: number; systemPrompt?: string; tools?: ToolSchema[]; toolChoice?: 'auto' | 'any' | 'none' | { type: 'tool'; name: string }; }
+export interface ChatRequest { messages: ChatMessage[]; temperature?: number; maxTokens?: number; systemPrompt?: string; tools?: ToolSchema[]; toolChoice?: 'auto' | 'any' | 'none' | { type: 'tool'; name: string }; thinkingLevel?: ThinkingLevel; }
 export interface ChatResponse { content: string; toolCalls?: ToolCall[]; finishReason: 'stop' | 'tool_use' | 'max_tokens' | 'error'; usage?: { inputTokens: number; outputTokens: number; totalTokens: number }; rawResponse?: unknown; }
 export interface ChatChunk { delta: string; toolCalls?: Partial<ToolCall>[]; }
 export interface ToolCall { id: string; name: string; input: unknown; }
@@ -22,6 +24,8 @@ export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
 export type PermissionResult = { allowed: true } | { allowed: false; reason: string };
 export type PermissionMode = 'safe' | 'normal' | 'auto' | 'dangerous';
 export interface Config { provider: string; model: string; apiKey?: string; baseUrl?: string; permissionMode: PermissionMode; maxIterations: number; temperature: number; workspaceRoot: string; sessionDir?: string; debug: boolean; enableToolRetry?: boolean; maxToolRetries?: number; enableToolCache?: boolean;  toolTimeout?: number;
+  /** Reasoning effort: 'off' sends no thinking parameters, the others map to a token budget. */
+  thinkingLevel?: ThinkingLevel;
   /** Approximate model context window (tokens) used to trigger conversation compression (default 100000). */
   contextWindowTokens?: number;
   /** Recent messages kept verbatim by the context compressor (default 12). */

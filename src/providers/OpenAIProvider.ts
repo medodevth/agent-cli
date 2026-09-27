@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam, ChatCompletionTool, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
+import type { ChatCompletionMessageParam, ChatCompletionTool, ChatCompletionContentPart, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { BaseAIProvider } from './AIProvider.js';
 import {
   ChatRequest,
@@ -8,19 +8,22 @@ import {
   ToolCall,
   ProviderError,
   ContentBlock,
+  ThinkingLevel,
 } from '../types/index.js';
 
 export class OpenAIProvider extends BaseAIProvider {
   name = 'openai';
   private client: OpenAI;
   private model: string;
+  private thinkingLevel: ThinkingLevel;
 
   constructor(
     apiKey: string,
-    options?: { baseUrl?: string; model?: string; client?: OpenAI }
+    options?: { baseUrl?: string; model?: string; client?: OpenAI; thinkingLevel?: ThinkingLevel }
   ) {
     super();
     this.model = options?.model || 'gpt-4-turbo-preview';
+    this.thinkingLevel = options?.thinkingLevel || 'off';
     this.client =
       options?.client ??
       new OpenAI({
@@ -29,13 +32,24 @@ export class OpenAIProvider extends BaseAIProvider {
       });
   }
 
+  /** Maps the shared reasoning level onto OpenAI's `reasoning_effort` knob. */
+  private reasoningEffort(): 'low' | 'medium' | 'high' | null {
+    if (this.thinkingLevel === 'low') return 'low';
+    if (this.thinkingLevel === 'medium') return 'medium';
+    if (this.thinkingLevel === 'high') return 'high';
+    return null;
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
+      const effort = this.reasoningEffort();
       const params: ChatCompletionCreateParamsNonStreaming = {
         model: this.model,
         messages: this.toApiMessages(request),
-        temperature: request.temperature || 0.7,
+        // Reasoning models reject a custom temperature, so it is dropped when on.
+        ...(effort ? {} : { temperature: request.temperature || 0.7 }),
         max_tokens: request.maxTokens || 8192,
+        ...(effort ? { reasoning_effort: effort } : {}),
         ...(request.tools && request.tools.length > 0
           ? {
               tools: this.mapTools(request.tools),
@@ -132,6 +146,15 @@ export class OpenAIProvider extends BaseAIProvider {
         const textParts = msg.content
           .filter(b => b.type === 'text')
           .map(b => b.text ?? '');
+        const fileNotes = msg.content
+          .filter(b => b.type === 'file')
+          .map(b => `[Attached file: ${b.fileName || 'file'}]\n${b.content || ''}`);
+        const images = msg.content
+          .filter(b => b.type === 'image' && b.source)
+          .map(b => ({
+            type: 'image_url' as const,
+            image_url: { url: `data:${b.source!.media_type};base64,${b.source!.data}` },
+          }));
 
         for (const block of toolResults) {
           messages.push({
@@ -141,8 +164,14 @@ export class OpenAIProvider extends BaseAIProvider {
           });
         }
 
-        if (textParts.some(Boolean)) {
-          messages.push({ role: 'user', content: textParts.join('\n') });
+        const textBody = textParts.concat(fileNotes).filter(Boolean).join('\n');
+        if (images.length) {
+          const parts: ChatCompletionContentPart[] = [];
+          if (textBody) parts.push({ type: 'text', text: textBody });
+          parts.push(...images);
+          messages.push({ role: 'user' as const, content: parts });
+        } else if (textBody) {
+          messages.push({ role: 'user', content: textBody });
         }
         continue;
       }
@@ -196,11 +225,13 @@ export class OpenAIProvider extends BaseAIProvider {
 
   async *stream(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
+      const effort = this.reasoningEffort();
       const stream = await this.client.chat.completions.create({
         model: this.model,
         messages: this.toApiMessages(request),
-        temperature: request.temperature || 0.7,
+        ...(effort ? {} : { temperature: request.temperature || 0.7 }),
         max_tokens: request.maxTokens || 8192,
+        ...(effort ? { reasoning_effort: effort } : {}),
         stream: true,
       });
 

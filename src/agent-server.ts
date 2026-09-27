@@ -20,7 +20,9 @@ const ALLOWED_ORIGINS = process.env.AGENT_SERVER_ORIGIN?.split(',').map(origin =
 
 app.use(cors(ALLOWED_ORIGINS ? { origin: ALLOWED_ORIGINS } : { origin: false }));
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(path.join(__dirname, '../../public')));
+// Serve the web UI from <repo root>/public. Compiled output lives in dist/ and
+// the sources in src/, so exactly one level up is the project root in both cases.
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Baseline security headers (CSP when a web UI is served).
 app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -92,15 +94,19 @@ let requestInProgress = false;
 function initializeAgent(): Agent {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is required to start the agent server');
+  // Honour the env contract the SDK and the CLI already use, so a relay or proxy
+  // endpoint (and the model name it serves) works without editing this file.
+  const model = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
+  const baseUrl = process.env.ANTHROPIC_BASE_URL || undefined;
   const allowMutations = process.env.AGENT_SERVER_ALLOW_MUTATIONS === 'true';
   config = {
-    provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', apiKey,
+    provider: 'anthropic', model, apiKey,
     permissionMode: allowMutations ? 'auto' : 'safe', maxIterations: 20, temperature: 0.7,
     workspaceRoot: process.cwd(), debug: false, enableToolRetry: true, maxToolRetries: 3,
     enableToolCache: true, toolTimeout: 30000, validateToolInputs: true, autoRecovery: true,
     strictToolCalling: true, toolRouterMaxTools: 12, toolQueueConcurrency: 1, serverApiKey: API_KEY,
   };
-  agent = new Agent(new AnthropicProvider(apiKey, { model: config.model }), createDefaultToolRegistry(), new ServerPermissionManager(allowMutations), config);
+  agent = new Agent(new AnthropicProvider(apiKey, { model, baseUrl }), createDefaultToolRegistry(), new ServerPermissionManager(allowMutations), config);
   return agent;
 }
 function getAgent(): Agent { return agent || initializeAgent(); }

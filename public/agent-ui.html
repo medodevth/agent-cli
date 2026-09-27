@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <meta name="color-scheme" content="dark light">
   <title>Agent CLI</title>
   <style>
@@ -294,7 +294,11 @@
        --------------------------------------------------------------- */
     .app {
       display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+      /* 100vh is the *large* viewport on a phone: it ignores the browser bars,
+         so a composer pinned to the bottom lands underneath them. dvh tracks
+         the space actually visible; the vh line stays as the fallback. */
       height: 100vh;
+      height: 100dvh;
       transition: grid-template-columns var(--med) var(--ease);
     }
     .app.with-panel { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--panel-w); }
@@ -671,7 +675,12 @@
     /* ---------------------------------------------------------------
        Composer
        --------------------------------------------------------------- */
-    .composer-dock { flex: none; padding: 0 var(--sp-5) var(--sp-4); max-width: var(--column-w); margin: 0 auto; width: 100%; }
+    .composer-dock {
+      flex: none; max-width: var(--column-w); margin: 0 auto; width: 100%;
+      /* Clear the home indicator / gesture bar so the composer is never the
+         thing sitting under the system UI. */
+      padding: 0 var(--sp-5) calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+    }
     .composer {
       width: 100%; background: var(--bg-elev);
       border: 1px solid var(--border-strong); border-radius: 26px;
@@ -923,7 +932,7 @@
       }
       .app.sidebar-collapsed .topbar-open { display: grid; }
       .column { padding: 0 var(--sp-4); }
-      .composer-dock { padding: 0 var(--sp-4) var(--sp-4); }
+      .composer-dock { padding: 0 var(--sp-4) calc(var(--sp-4) + env(safe-area-inset-bottom, 0px)); }
       .hero-title { font-size: 24px; }
       .bubble { max-width: 92%; }
     }

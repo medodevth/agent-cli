@@ -579,4 +579,14 @@ describe('web UI (agent-ui.html)', () => {
     expect(html).toMatch(/Mitr/);
     expect(html).toMatch(/font-family:[^;]*Helvetica/);
   });
+
+  it('keeps the bottom-docked composer inside the usable viewport', () => {
+    // Regression guard: 100vh is the *large* viewport on a phone, so a composer
+    // docked at the bottom of a 100vh shell ended up underneath the browser bars
+    // and the send box looked like it had vanished.
+    expect(html).toMatch(/interactive-widget=resizes-content/);
+    expect(html).toMatch(/height:\s*100dvh/);
+    expect(html).toMatch(/height:\s*100vh;\s*\n\s*height:\s*100dvh/);
+    expect(html).toMatch(/padding:[^;]*env\(safe-area-inset-bottom/);
+  });
 });

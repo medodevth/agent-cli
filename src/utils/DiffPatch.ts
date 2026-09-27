@@ -267,11 +267,9 @@ export function reversePatch(patched: string, patch: string): string {
     })
     .join('\n')
     .replace(
-      /^(@@ -\d+(?:,\d+)? \+)(\d+(?:,\d+)?)( @@.*)$/gm,
-      (_m, left: string, _b: string, right: string) => {
-        void _b;
-        return `${left}${_b}${right}`;
-      }
+      /^(@@ -)(\d+(?:,\d+)?)( \+)(\d+(?:,\d+)?)( @@.*)$/gm,
+      (_match, minus: string, oldRange: string, plus: string, newRange: string, tail: string) =>
+        `${minus}${newRange}${plus}${oldRange}${tail}`
     );
   return applyPatch(patched, reversed);
 }

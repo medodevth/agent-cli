@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import type { Session } from '../types/index.js';
+import { hasOwn, ownGet } from './SafeObject.js';
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -149,9 +150,9 @@ export function pluginDependencyResolver(dependencies: Record<string, readonly s
   const visit = (name: string, chain: string[]): void => {
     if (permanent.has(name)) return;
     if (temporary.has(name)) throw new Error(`plugin dependency cycle: ${[...chain, name].join(' -> ')}`);
-    if (!(name in dependencies)) throw new Error(`unknown plugin dependency '${name}'`);
+    if (!hasOwn(dependencies, name)) throw new Error(`unknown plugin dependency '${name}'`);
     temporary.add(name);
-    for (const dependency of dependencies[name] ?? []) {
+    for (const dependency of ownGet(dependencies, name) ?? []) {
       if (!nameSet.has(dependency)) throw new Error(`plugin '${name}' depends on unknown plugin '${dependency}'`);
       visit(dependency, [...chain, name]);
     }
@@ -184,6 +185,17 @@ export function pluginLifecycleHooks(hooks: readonly PluginHook[]): PluginLifecy
   }
   let state: 'new' | 'initialized' | 'disposed' | 'failed' = 'new';
   const initialized: PluginHook[] = [];
+  // Disposes each hook at most once, in reverse init order, and drains the list
+  // so a later dispose() cannot re-run hooks an init rollback already handled.
+  const disposeInitialized = async (): Promise<unknown[]> => {
+    const pending = [...initialized].reverse();
+    initialized.length = 0;
+    const errors: unknown[] = [];
+    for (const hook of pending) {
+      try { await hook.dispose?.(); } catch (error) { errors.push(error); }
+    }
+    return errors;
+  };
   return {
     async initialize() {
       if (state === 'initialized') return;
@@ -196,20 +208,14 @@ export function pluginLifecycleHooks(hooks: readonly PluginHook[]): PluginLifecy
         state = 'initialized';
       } catch (error) {
         state = 'failed';
-        const cleanupErrors: unknown[] = [];
-        for (const hook of initialized.reverse()) {
-          try { await hook.dispose?.(); } catch (cleanupError) { cleanupErrors.push(cleanupError); }
-        }
+        const cleanupErrors = await disposeInitialized();
         if (cleanupErrors.length > 0) throw new AggregateError([error, ...cleanupErrors], 'plugin initialization and rollback failed');
         throw error;
       }
     },
     async dispose() {
       if (state === 'disposed' || state === 'new') { state = 'disposed'; return; }
-      const errors: unknown[] = [];
-      for (const hook of initialized.reverse()) {
-        try { await hook.dispose?.(); } catch (error) { errors.push(error); }
-      }
+      const errors = await disposeInitialized();
       state = errors.length > 0 ? 'failed' : 'disposed';
       if (errors.length > 0) throw new AggregateError(errors, 'one or more plugin dispose hooks failed');
     },
@@ -385,7 +391,7 @@ export function localizationLoader(
   const selected = catalogs[locale] ?? catalogs[baseLocale] ?? {};
   const fallback = catalogs[fallbackLocale] ?? {};
   return (key, variables = {}) => {
-    const template = selected[key] ?? fallback[key] ?? key;
+    const template = ownGet(selected, key) ?? ownGet(fallback, key) ?? key;
     return template.replace(/\{([A-Za-z0-9_.-]+)\}/g, (whole, name: string) =>
       Object.prototype.hasOwnProperty.call(variables, name) ? String(variables[name]) : whole
     );

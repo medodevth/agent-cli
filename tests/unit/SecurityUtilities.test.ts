@@ -161,6 +161,12 @@ describe('SecurityUtilities security checks', () => {
     expect(permissionModeEnforcer('unknown', { safe: ['read'] }).allowed).toBe(false);
   });
 
+  it('does not authorize inherited Object.prototype keys as permission modes', () => {
+    expect(permissionModeEnforcer('constructor', {}).allowed).toBe(false);
+    expect(permissionModeEnforcer('toString', {}).allowed).toBe(false);
+    expect(permissionModeEnforcer('constructor', { safe: ['read'] }).allowed).toBe(false);
+  });
+
   it('denies approval when no explicit approval is supplied', async () => {
     await expect(approvalGateCheck({ action: 'delete' })).resolves.toMatchObject({ allowed: false });
     await expect(approvalGateCheck({ action: 'delete' }, { approved: true })).resolves.toMatchObject({ allowed: true });
@@ -170,6 +176,13 @@ describe('SecurityUtilities security checks', () => {
     expect(sensitiveFileGuard('project/.env.local').sensitive).toBe(true);
     expect(sensitiveFileGuard('project/src/index.ts').sensitive).toBe(false);
     expect(sensitiveFileGuard('project/.env', { allow: ['project/.env'] }).sensitive).toBe(false);
+  });
+
+  it('flags credential files that carry an extension', () => {
+    expect(sensitiveFileGuard('credentials.json').sensitive).toBe(true);
+    expect(sensitiveFileGuard('gcp-credentials.json').sensitive).toBe(true);
+    expect(sensitiveFileGuard('config/credentials.yaml').sensitive).toBe(true);
+    expect(sensitiveFileGuard('project/src/credentials.ts').sensitive).toBe(true);
   });
 
   it('encrypts with authenticated AES-GCM and rejects tampering or invalid keys', () => {

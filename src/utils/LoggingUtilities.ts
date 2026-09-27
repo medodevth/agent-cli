@@ -294,7 +294,7 @@ export function logQueryHelper<T extends { level: LogLevel; message: string; tim
   if (query.limit !== undefined && (!Number.isInteger(query.limit) || query.limit < 0)) throw new Error('limit must be a non-negative integer');
   const filtered = entries.filter(entry => (!query.minLevel || LEVEL_VALUE[entry.level] >= LEVEL_VALUE[query.minLevel]) && (query.contains === undefined || entry.message.toLowerCase().includes(query.contains.toLowerCase())) && (query.traceId === undefined || entry.traceId === query.traceId));
   if (query.limit === undefined) return filtered;
-  return query.limit === 0 ? [] : filtered.slice(0, query.limit);
+  return query.limit === 0 ? [] : filtered.slice(-query.limit);
 }
 
 /** 196. Split records into expired and retained sets without deleting source data. */

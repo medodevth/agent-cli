@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { assignOwn } from './SafeObject.js';
+
 export type ErrorKind = 'transient' | 'permanent' | 'timeout' | 'unknown';
 export interface ErrorClassification {
   kind: ErrorKind;
@@ -328,8 +330,8 @@ function redactSecrets(value: unknown, seen = new WeakSet<object>()): unknown {
   seen.add(value);
   const out: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value)) {
-    if (/api.?key|token|password|secret|credential|authorization/i.test(key)) out[key] = '[REDACTED]';
-    else out[key] = redactSecrets(nested, seen);
+    if (/api.?key|token|password|secret|credential|authorization/i.test(key)) assignOwn(out, key, '[REDACTED]');
+    else assignOwn(out, key, redactSecrets(nested, seen));
   }
   seen.delete(value);
   return out;

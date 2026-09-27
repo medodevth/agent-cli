@@ -1,5 +1,7 @@
 import { createHmac } from 'crypto';
 
+import { classifyIpHost } from './NetUtilities.js';
+
 export interface HttpRequest {
   url: string | URL;
   method?: string;
@@ -178,13 +180,10 @@ export function internalIPBlocklist(value: string): { blocked: boolean; reason?:
   try { url = new URL(value); } catch { return { blocked: true, reason: 'Invalid URL' }; }
   if (!['http:', 'https:'].includes(url.protocol)) return { blocked: true, reason: 'Only HTTP(S) is allowed' };
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host.endsWith('.internal')) return { blocked: true, reason: 'Local or internal hostname' };
-  const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
-  if (match) {
-    const octets = match.slice(1).map(Number);
-    const [a, b] = octets;
-    if (octets.some(valuePart => valuePart > 255) || a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return { blocked: true, reason: 'Private or invalid IPv4 address' };
-  }
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) return { blocked: true, reason: 'Local or internal hostname' };
+  // Classify IP literals (IPv4 plus every IPv6 spelling) so mapped/ULA/NAT64
+  // forms cannot slip past a dotted-quad-only check.
+  if (classifyIpHost(host) === 'blocked') return { blocked: true, reason: 'Private or invalid IP address' };
   return { blocked: false };
 }
 
@@ -250,7 +249,7 @@ export interface RequestLogEntry {
 /** Log request metadata with credential headers redacted before invoking the injected handler. */
 export async function requestLoggerMiddleware(request: HttpRequest, next: HttpTransport, logger: (entry: RequestLogEntry) => void): Promise<HttpResponse> {
   const response = await next(request);
-  const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([key, value]) => [/^(authorization|proxy-authorization|cookie|set-cookie)$/i.test(key) ? key : key, /^(authorization|proxy-authorization|cookie|set-cookie)$/i.test(key) ? '[REDACTED]' : value]));
+  const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([key, value]) => [key, /^(authorization|proxy-authorization|cookie|set-cookie)$/i.test(key) ? '[REDACTED]' : value]));
   logger({ url: String(request.url), method: (request.method ?? 'GET').toUpperCase(), headers, status: response.status });
   return response;
 }

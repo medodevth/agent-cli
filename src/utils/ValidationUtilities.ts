@@ -10,6 +10,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { JSONSchema } from '../types/index.js';
+import { classifyIpHost } from './NetUtilities.js';
+import { assignOwn, hasOwn } from './SafeObject.js';
 import { ToolCallValidator } from '../agent/ToolCallValidator.js';
 
 export interface Issue {
@@ -145,16 +147,16 @@ function validateAgainstSchema(
     }
     for (const [key, propSchema] of Object.entries(properties)) {
       if (key in obj) {
-        out[key] = validateAgainstSchema(
+        assignOwn(out, key, validateAgainstSchema(
           obj[key],
           propSchema,
           at ? `${at}.${key}` : key,
           errors,
           warnings,
           options
-        );
+        ));
       } else if ((propSchema.default as unknown) !== undefined) {
-        out[key] = propSchema.default;
+        assignOwn(out, key, propSchema.default);
       }
     }
     const additional = schema.additionalProperties as boolean | undefined;
@@ -165,7 +167,7 @@ function validateAgainstSchema(
       }
     } else {
       for (const key of Object.keys(obj)) {
-        if (!(key in out)) out[key] = obj[key];
+        if (!hasOwn(out, key)) assignOwn(out, key, obj[key]);
       }
     }
     if (options.stripUnknown && additional === undefined) {
@@ -445,7 +447,7 @@ export function validateFilePathInput(
   if (path.isAbsolute(inputPath)) return { valid: false, error: 'Absolute paths are not allowed' };
   const resolved = path.resolve(workspaceRoot, inputPath);
   const relative = path.relative(workspaceRoot, resolved);
-  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     return { valid: false, error: 'Path escapes the workspace' };
   }
   return { valid: true, resolved };
@@ -467,22 +469,17 @@ export function validateURLInput(
   }
   if (options.allowPrivate === true) return { valid: true };
   const host = parsed.hostname.toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || host === '::1') {
+  if (host === 'localhost' || host.endsWith('.localhost')) {
     return { valid: false, error: 'Localhost URLs are blocked (SSRF guard)' };
   }
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host.replace(/^\[|\]$/g, ''));
-  if (ipv4) {
-    const octets = ipv4.slice(1).map(Number);
-    if (octets.some(n => n > 255)) return { valid: false, error: 'Invalid IPv4 address' };
-    const [a, b] = octets as [number, number, number, number];
-    const isPrivate =
-      a === 10 ||
-      a === 127 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254) ||
-      a === 0;
-    if (isPrivate) return { valid: false, error: 'Private/internal IPs are blocked (SSRF guard)' };
+  if (ipv4 && ipv4.slice(1).some(part => Number(part) > 255)) {
+    return { valid: false, error: 'Invalid IPv4 address' };
+  }
+  // Covers IPv4 plus every IPv6 spelling: mapped, IPv4-compatible, NAT64, 6to4,
+  // unique-local, link-local and multicast.
+  if (classifyIpHost(host) === 'blocked') {
+    return { valid: false, error: 'Private/internal IPs are blocked (SSRF guard)' };
   }
   if (host === 'metadata.google.internal' || host.endsWith('.internal')) {
     return { valid: false, error: 'Internal metadata hosts are blocked (SSRF guard)' };

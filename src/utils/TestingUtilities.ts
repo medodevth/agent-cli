@@ -219,6 +219,9 @@ export async function snapshotTestUpdater(
   return { planned, applied: true };
 }
 
+/** Unique sentinel so a legitimate `null`/`undefined` result is never mistaken for a timeout. */
+const TIMED_OUT = Symbol('testTimeoutHandler.timedOut');
+
 /** 289. Bound a promise and report whether it completed before the deadline. */
 export async function testTimeoutHandler<T>(
   operation: Promise<T>, timeoutMs: number,
@@ -227,9 +230,10 @@ export async function testTimeoutHandler<T>(
   const start = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const timeout = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); });
-    const result = await Promise.race([operation, timeout]);
-    return result === null ? { timedOut: true, durationMs: Date.now() - start } : { timedOut: false, result, durationMs: Date.now() - start };
+    const timeout = new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs); });
+    const raced = await Promise.race([operation, timeout]);
+    if (raced === TIMED_OUT) return { timedOut: true, durationMs: Date.now() - start };
+    return { timedOut: false, result: raced, durationMs: Date.now() - start };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

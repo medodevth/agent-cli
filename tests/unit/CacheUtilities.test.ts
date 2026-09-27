@@ -63,6 +63,12 @@ describe('response cache TTL and eviction', () => {
     expect(cache.get('answer')).toBeUndefined();
   });
 
+  it('treats a key that was never written as expired, matching the store contract', () => {
+    const cache = responseCacheStore<number>({ ttlMs: 10, now: () => 100 });
+    expect(cache.isExpired('missing')).toBe(true);
+    expect(cacheTTLManager(cache).isExpired('missing')).toBe(true);
+  });
+
   it('chooses least-recently-used entries first and enforces the capacity', () => {
     let now = 0;
     const cache = responseCacheStore<string>({ maxEntries: 2, now: () => now++ });

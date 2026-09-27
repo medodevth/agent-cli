@@ -140,6 +140,16 @@ describe('validateFilePathInput (132)', () => {
       resolved: '/workspace/src/main.ts',
     });
   });
+
+  it('accepts in-workspace names that merely start with two dots', () => {
+    expect(validateFilePathInput('..hidden.txt', '/workspace')).toMatchObject({
+      valid: true,
+      resolved: '/workspace/..hidden.txt',
+    });
+    expect(validateFilePathInput('a/..b/c.ts', '/workspace').valid).toBe(true);
+    expect(validateFilePathInput('a/../../outside.ts', '/workspace').valid).toBe(false);
+    expect(validateFilePathInput('../..', '/workspace').valid).toBe(false);
+  });
 });
 
 describe('validateURLInput (133)', () => {

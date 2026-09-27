@@ -10,6 +10,8 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs/promises';
+
+import { assignOwn } from './SafeObject.js';
 import * as path from 'path';
 import { parseCommand } from '../tools/ShellTool.js';
 import { ShellSafety } from '../security/ShellSafety.js';
@@ -397,7 +399,7 @@ export function envVarInjector(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const [key, value] of Object.entries(vars)) {
-    if (!allowlist || allowlist.includes(key)) env[key] = value;
+    if (!allowlist || allowlist.includes(key)) assignOwn(env, key, value);
   }
   return env;
 }

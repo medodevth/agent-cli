@@ -116,6 +116,12 @@ describe('testTimeoutHandler', () => {
     expect(await testTimeoutHandler(Promise.resolve(42), 50)).toMatchObject({ timedOut: false, result: 42 });
     expect(await testTimeoutHandler(new Promise(() => undefined), 2)).toMatchObject({ timedOut: true });
   });
+
+  it('reports a resolved null or undefined result as a result, not a timeout', async () => {
+    expect(await testTimeoutHandler(Promise.resolve(null), 50)).toMatchObject({ timedOut: false, result: null });
+    expect(await testTimeoutHandler(Promise.resolve(undefined), 50)).toMatchObject({ timedOut: false });
+    expect((await testTimeoutHandler(Promise.resolve(undefined), 50)).timedOut).toBe(false);
+  });
 });
 
 describe('parallelTestRunner', () => {

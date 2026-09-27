@@ -85,6 +85,31 @@ describe('MiscUtilities (481-500)', () => {
     expect(calls).toEqual(['init-a', 'init-b', 'dispose-b', 'dispose-a']);
   });
 
+  it('disposes each initialized hook once when init fails and dispose() is called afterwards', async () => {
+    const calls: string[] = [];
+    const lifecycle = pluginLifecycleHooks([
+      { id: 'a', init: async () => { calls.push('init-a'); }, dispose: async () => { calls.push('dispose-a'); } },
+      { id: 'b', init: async () => { calls.push('init-b'); throw new Error('boom'); }, dispose: async () => { calls.push('dispose-b'); } },
+    ]);
+    await expect(lifecycle.initialize()).rejects.toThrow('boom');
+    expect(calls).toEqual(['init-a', 'init-b', 'dispose-a']);
+    expect(lifecycle.status()).toBe('failed');
+    await lifecycle.dispose();
+    expect(calls).toEqual(['init-a', 'init-b', 'dispose-a']);
+    expect(lifecycle.status()).toBe('disposed');
+  });
+
+  it('does not mutate the caller hook list when rolling back', async () => {
+    const hooks = [
+      { id: 'a', dispose: async () => undefined },
+      { id: 'b', dispose: async () => undefined },
+    ];
+    const lifecycle = pluginLifecycleHooks(hooks);
+    await lifecycle.initialize();
+    await lifecycle.dispose();
+    expect(hooks.map(hook => hook.id)).toEqual(['a', 'b']);
+  });
+
   it('configHotSwap validates and applies a new immutable config snapshot', async () => {
     const previous = { mode: 'safe', retries: 1 };
     const applied: unknown[] = [];

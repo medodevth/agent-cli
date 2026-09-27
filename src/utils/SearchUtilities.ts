@@ -8,6 +8,8 @@
  * No API or filesystem calls are made by this module.
  */
 
+import { assignOwn } from './SafeObject.js';
+
 export type Embedding = number[];
 export type EmbeddingProvider = (text: string) => Embedding | Promise<Embedding>;
 
@@ -289,7 +291,7 @@ export async function queryToEmbeddingCache(
   if (current) return [...current];
   const embedding = await generateEmbedding(query, options);
   if (cache instanceof Map) cache.set(key, embedding);
-  else cache[key] = embedding;
+  else assignOwn(cache, key, embedding);
   return [...embedding];
 }
 

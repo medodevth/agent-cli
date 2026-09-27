@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
+/** Decompression bomb guard: refuse cache payloads expanding beyond this. */
+const DEFAULT_MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024;
+
 export interface CacheRecord<T> {
   key: string;
   value: T;
@@ -334,7 +337,9 @@ export function cacheTTLManager<T>(cache: CacheStore<T>): CacheTTLController {
   return {
     isExpired(key): boolean {
       const record = cache.record(key);
-      return record?.expiresAt !== undefined && record.expiresAt <= cache.now();
+      // Match the store contract: a key that was never written is not live.
+      if (!record) return true;
+      return record.expiresAt !== undefined && record.expiresAt <= cache.now();
     },
     remainingMs(key): number | undefined {
       const record = cache.record(key);
@@ -436,13 +441,14 @@ export function staleCacheDetector<T>(
 /** Gzip UTF-8 text into a tagged base64 string, or decode the tagged representation. */
 export function cacheCompressionHelper(
   value: string | Uint8Array,
-  options: { decompress?: boolean; encoding?: BufferEncoding } = {},
+  options: { decompress?: boolean; encoding?: BufferEncoding; maxBytes?: number } = {},
 ): string {
   if (options.decompress) {
     const encoded = typeof value === 'string' ? value : Buffer.from(value).toString(options.encoding ?? 'utf8');
     if (!encoded.startsWith('gzip:')) return encoded;
+    const maxBytes = options.maxBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
     try {
-      return gunzipSync(Buffer.from(encoded.slice(5), 'base64')).toString(options.encoding ?? 'utf8');
+      return gunzipSync(Buffer.from(encoded.slice(5), 'base64'), { maxOutputLength: maxBytes }).toString(options.encoding ?? 'utf8');
     } catch (error) {
       throw new Error(`Invalid compressed cache value: ${error instanceof Error ? error.message : String(error)}`);
     }

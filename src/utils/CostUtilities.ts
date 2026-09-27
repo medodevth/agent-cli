@@ -1,5 +1,7 @@
 /** Deterministic cost and token-use accounting over caller-supplied usage records. */
 
+import { assignOwn, ownGet } from './SafeObject.js';
+
 export interface UsageRecord {
   timestamp?: string | number | Date;
   provider?: string;
@@ -58,11 +60,11 @@ function costOf(record: UsageRecord): number {
 
 function addTo<K extends string | number>(map: Record<string, UsageTotals>, key: K, record: UsageRecord): void {
   const name = String(key);
-  const current = map[name] ?? { requestCount: 0, tokens: 0, cost: 0 };
+  const current = ownGet(map, name) ?? { requestCount: 0, tokens: 0, cost: 0 };
   current.requestCount += 1;
   current.tokens += tokenCountOf(record);
   current.cost += costOf(record);
-  map[name] = current;
+  assignOwn(map, name, current);
 }
 
 function groupName(value: string | number | undefined): string {
@@ -99,7 +101,7 @@ export function costPerModuleCalculator(records: readonly UsageRecord[]): { tota
   const byModule: Record<string, number> = {};
   for (const record of records) {
     const name = groupName(record.module);
-    byModule[name] = (byModule[name] ?? 0) + costOf(record);
+    assignOwn(byModule, name, (ownGet(byModule, name) ?? 0) + costOf(record));
   }
   return { totalCost: sumCost(records), byModule };
 }

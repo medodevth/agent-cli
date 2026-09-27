@@ -2,6 +2,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { assignOwn } from './SafeObject.js';
+
 export interface GraphNode {
   id: string;
   title?: string;
@@ -304,7 +306,7 @@ function cloneValue<T>(value: T, seen = new Map<object, unknown>()): T {
   const copy = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
   seen.set(object, copy);
   for (const key of Object.keys(value as Record<string, unknown>)) {
-    copy[key] = cloneValue((value as Record<string, unknown>)[key], seen);
+    assignOwn(copy, key, cloneValue((value as Record<string, unknown>)[key], seen));
   }
   return copy as T;
 }
@@ -562,8 +564,32 @@ export function graphMergeOnConflict(
     }
     mergedNodes.push(merged);
   }
-  if (resolution === 'error' && conflicts.length > 0) throw new Error(`Merge conflict in ${conflicts.length} field(s)`);
-  const graph: PlanGraph = { ...base, ...theirs, ...ours, nodes: mergedNodes };
+  // Graph-level fields follow the same three-way rule as node fields: only the
+  // branch that actually changed a field may overwrite it, and a genuine
+  // both-changed divergence is resolved by conflictResolution.
+  const topLevel: Record<string, unknown> = {};
+  const topLevelConflicts: string[] = [];
+  for (const field of unique([...Object.keys(base), ...Object.keys(ours), ...Object.keys(theirs)])) {
+    if (field === 'nodes') continue;
+    const hasB = Object.hasOwn(base, field);
+    const hasO = Object.hasOwn(ours, field);
+    const hasT = Object.hasOwn(theirs, field);
+    const bv = (base as Record<string, unknown>)[field];
+    const ov = (ours as Record<string, unknown>)[field];
+    const tv = (theirs as Record<string, unknown>)[field];
+    const oChanged = hasO !== hasB || !sameValue(ov, bv);
+    const tChanged = hasT !== hasB || !sameValue(tv, bv);
+    if (oChanged && tChanged && (hasO !== hasT || !sameValue(ov, tv))) {
+      topLevelConflicts.push(field);
+      if (resolution === 'theirs' ? hasT : hasO) topLevel[field] = resolution === 'theirs' ? tv : ov;
+    } else if (oChanged ? hasO : hasT) {
+      topLevel[field] = oChanged ? ov : tv;
+    } else if (hasB) {
+      topLevel[field] = bv;
+    }
+  }
+  if (resolution === 'error' && conflicts.length + topLevelConflicts.length > 0) throw new Error(`Merge conflict in ${conflicts.length + topLevelConflicts.length} field(s)`);
+  const graph: PlanGraph = { ...topLevel, nodes: mergedNodes } as PlanGraph;
   return { graph, conflicts };
 }
 
@@ -575,17 +601,20 @@ export function criticalPathFinder(
   const order = topologicalSort(graph);
   const best = new Map<string, { path: string[]; duration: number }>();
   for (const node of order) {
-    let prefix: { path: string[]; duration: number } = { path: [], duration: 0 };
+    let prefix: { path: string[]; duration: number } | undefined;
     for (const dependency of graph[node] ?? []) {
       const candidate = best.get(dependency);
-      if (candidate && candidate.duration > prefix.duration) prefix = candidate;
+      if (candidate && (!prefix || candidate.duration > prefix.duration)) prefix = candidate;
     }
     const duration = options.durations?.[node] ?? 1;
-    best.set(node, { path: [...prefix.path, node], duration: prefix.duration + duration });
+    best.set(node, { path: [...(prefix?.path ?? []), node], duration: (prefix?.duration ?? 0) + duration });
   }
-  let result: { path: string[]; duration: number } = { path: [], duration: 0 };
-  for (const candidate of best.values()) if (candidate.duration > result.duration) result = candidate;
-  return result;
+  let result: { path: string[]; duration: number } | undefined;
+  for (const candidate of best.values()) {
+    // Ties go to the longer chain so an all-zero-weight DAG still yields a path.
+    if (!result || candidate.duration > result.duration || (candidate.duration === result.duration && candidate.path.length > result.path.length)) result = candidate;
+  }
+  return result ?? { path: [], duration: 0 };
 }
 
 /** 439. Select the latest dependency-closed completed work as a rollback point. */
@@ -598,18 +627,34 @@ export function planRollbackPoint(plan: PlanGraph): {
   const byId = new Map(plan.nodes.map(node => [node.id, node]));
   const completed = (status: string | undefined): boolean =>
     status === 'done' || status === 'completed' || status === 'complete' || status === 'success';
+  // Fixpoint pass: a completed node whose completed dependency is declared later
+  // in the array must still be recognised as dependency-closed.
   const safe = new Set<string>();
-  for (const node of plan.nodes) {
-    if (!completed(node.status)) continue;
-    if ((node.dependencies ?? []).every(id => safe.has(id))) safe.add(node.id);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const node of plan.nodes) {
+      if (safe.has(node.id) || !completed(node.status)) continue;
+      if ((node.dependencies ?? []).every(id => safe.has(id))) { safe.add(node.id); changed = true; }
+    }
   }
-  const completedNodeIds = plan.nodes.filter(node => safe.has(node.id)).map(node => node.id);
+  // Dependency-first order over the safe subgraph makes the rollback point
+  // independent of the order nodes happen to be listed in.
+  const remaining = new Set(safe);
+  const ordered: string[] = [];
+  while (remaining.size > 0) {
+    const next = plan.nodes.find(node => remaining.has(node.id) && (node.dependencies ?? []).every(id => !remaining.has(id)));
+    if (!next) break; // defensive: completed nodes with a dependency cycle
+    ordered.push(next.id);
+    remaining.delete(next.id);
+  }
+  const completedNodeIds = ordered;
   const pendingNodeIds = plan.nodes.filter(node => !safe.has(node.id)).map(node => node.id);
-  const rollbackNodeId = completedNodeIds.length ? completedNodeIds[completedNodeIds.length - 1] : null;
-  const snapshotNodes = plan.nodes.filter(node => safe.has(node.id)).map(node => ({ ...node, dependencies: (node.dependencies ?? []).filter(id => safe.has(id)) }));
+  const rollbackNodeId = ordered.length ? ordered[ordered.length - 1] : null;
+  const snapshotNodes = ordered.flatMap(id => {
+    const node = byId.get(id);
+    return node ? [{ ...node, dependencies: (node.dependencies ?? []).filter(dependency => safe.has(dependency)) }] : [];
+  });
   const snapshot: PlanGraph = { ...plan, nodes: snapshotNodes };
-  // Keep the lookup referenced here to make dangling dependency handling explicit.
-  void byId;
   return { rollbackNodeId, completedNodeIds, pendingNodeIds, snapshot };
 }
 

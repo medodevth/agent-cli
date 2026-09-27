@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SecretScanner } from '../security/SecretScanner.js';
+import { ownGet } from './SafeObject.js';
 import { validateURLInput } from './ValidationUtilities.js';
 
 export interface SecretFinding {
@@ -252,7 +253,7 @@ export async function killSwitchTrigger(
 
 /** Apply named security permission modes using an explicit policy table. */
 export function permissionModeEnforcer<T extends string>(requested: T, policies: Record<string, T[]>): { allowed: boolean; effective?: T; reason?: string } {
-  const policy = policies[requested];
+  const policy = ownGet(policies, requested);
   if (!policy || policy.length === 0) return { allowed: false, reason: `Unknown or empty permission mode: ${requested}` };
   return { allowed: true, effective: requested };
 }
@@ -272,7 +273,7 @@ export function sensitiveFileGuard(filePath: string, options: { allow?: string[]
   if (options.allow?.includes(normalized)) return { sensitive: false };
   const parts = normalized.toLowerCase().split('/');
   const base = parts[parts.length - 1] ?? '';
-  const sensitive = parts.some(part => part === '.git' || part === '.ssh' || part === '.aws' || part === '.gnupg') || /^\.env(?:\.|$)/i.test(base) || /(?:id_rsa|id_ed25519|\.pem$|\.key$|credentials?$|secrets?\.ya?ml$)/i.test(base);
+  const sensitive = parts.some(part => part === '.git' || part === '.ssh' || part === '.aws' || part === '.gnupg') || /^\.env(?:\.|$)/i.test(base) || /(?:id_rsa|id_ed25519|\.pem$|\.key$|credentials?(?:\.[a-z0-9]+)?$|secrets?\.ya?ml$)/i.test(base);
   return sensitive ? { sensitive: true, reason: 'Path may contain credentials or security-sensitive metadata' } : { sensitive: false };
 }
 

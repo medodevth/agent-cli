@@ -1,3 +1,5 @@
+import { hasOwn, ownGet } from './SafeObject.js';
+
 export type ExactTokenizer = (text: string) => number;
 
 /** A single context item. Session ownership is mandatory so callers can enforce isolation. */
@@ -217,10 +219,10 @@ export function injectRelevantFiles(options: InjectRelevantFilesOptions): Contex
   const visited = new Set<string>();
   const ordered: string[] = [];
   const visit = (filePath: string): void => {
-    if (visited.has(filePath) || !(filePath in options.files)) return;
+    if (visited.has(filePath) || !hasOwn(options.files, filePath)) return;
     visited.add(filePath);
     ordered.push(filePath);
-    for (const dependency of options.dependencyGraph[filePath] ?? []) visit(dependency);
+    for (const dependency of ownGet(options.dependencyGraph, filePath) ?? []) visit(dependency);
   };
   for (const root of roots) visit(root);
   const limited = options.maxFiles === undefined ? ordered : ordered.slice(0, Math.max(0, options.maxFiles));
@@ -229,7 +231,7 @@ export function injectRelevantFiles(options: InjectRelevantFilesOptions): Contex
     .map(filePath => ({
       id: `file:${filePath}`,
       sessionId: options.sessionId,
-      text: options.files[filePath],
+      text: ownGet(options.files, filePath) as string,
       source: filePath,
       filePath,
     }));

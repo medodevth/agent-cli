@@ -5,6 +5,8 @@
  * context handling. Every function is unit-tested in tests/unit/TextUtilities.test.ts.
  */
 
+import { assignOwn } from './SafeObject.js';
+
 /** 21. Truncate a string with an ellipsis, keeping whole words when possible. */
 export function truncateWithEllipsis(text: string, maxLength: number, ellipsis = '…'): string {
   if (maxLength <= 0) return '';
@@ -305,10 +307,10 @@ export function yamlSafeParse<T>(text: string, fallback: T): T {
       const obj = parent.container as Record<string, unknown>;
       if (rest === '') {
         const nested: Record<string, unknown> = {};
-        obj[key] = nested;
+        assignOwn(obj, key, nested);
         stack.push({ indent, container: nested, key });
       } else {
-        obj[key] = parseScalar(rest);
+        assignOwn(obj, key, parseScalar(rest));
       }
     }
     return root as T;

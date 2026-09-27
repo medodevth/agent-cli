@@ -220,6 +220,19 @@ describe('graphMergeOnConflict', () => {
     expect(merged.graph.nodes.map(node => node.id)).toEqual(['keep']);
     expect(merged.conflicts).toEqual([]);
   });
+
+  it('applies the three-way rule to graph-level fields and honours conflictResolution', () => {
+    const base = plan([{ id: 'a', title: 'Original' }], 'Base title');
+    const ours = plan([{ id: 'a', title: 'Original' }], 'Base title');
+    const theirs = plan([{ id: 'a', title: 'Original' }], 'Theirs title');
+    // Only theirs changed the field, so it propagates even when ours wins conflicts.
+    expect(graphMergeOnConflict(base, ours, theirs).graph.title).toBe('Theirs title');
+    const bothOurs = plan([{ id: 'a', title: 'Original' }], 'Ours title');
+    const bothTheirs = plan([{ id: 'a', title: 'Original' }], 'Theirs title');
+    expect(graphMergeOnConflict(base, bothOurs, bothTheirs).graph.title).toBe('Ours title');
+    expect(graphMergeOnConflict(base, bothOurs, bothTheirs, { conflictResolution: 'theirs' }).graph.title).toBe('Theirs title');
+    expect(() => graphMergeOnConflict(base, bothOurs, bothTheirs, { conflictResolution: 'error' })).toThrow(/conflict/i);
+  });
 });
 
 describe('criticalPathFinder', () => {
@@ -229,6 +242,10 @@ describe('criticalPathFinder', () => {
     }, { durations: { start: 2, left: 3, right: 4, finish: 1 } });
     expect(result).toEqual({ path: ['start', 'right', 'finish'], duration: 7 });
     expect(() => criticalPathFinder({ a: ['b'], b: ['a'] })).toThrow(/cycle/i);
+  });
+
+  it('still returns a path when every weight is zero', () => {
+    expect(criticalPathFinder({ b: ['a'] }, { durations: { a: 0, b: 0 } })).toEqual({ path: ['a', 'b'], duration: 0 });
   });
 });
 
@@ -243,6 +260,22 @@ describe('planRollbackPoint', () => {
     expect(result.completedNodeIds).toEqual(['base', 'feature']);
     expect(result.pendingNodeIds).toEqual(['deploy']);
     expect(result.snapshot.nodes.map(node => node.id)).toEqual(['base', 'feature']);
+  });
+
+  it('reports the same rollback point regardless of the order completed nodes are listed in', () => {
+    const forward = planRollbackPoint(plan([
+      { id: 'a', status: 'done' },
+      { id: 'b', status: 'done', dependencies: ['a'] },
+    ]));
+    const reversed = planRollbackPoint(plan([
+      { id: 'b', status: 'done', dependencies: ['a'] },
+      { id: 'a', status: 'done' },
+    ]));
+    expect(forward.rollbackNodeId).toBe('b');
+    expect(reversed.rollbackNodeId).toBe('b');
+    expect(reversed.completedNodeIds).toEqual(['a', 'b']);
+    expect(reversed.pendingNodeIds).toEqual([]);
+    expect(reversed.snapshot.nodes.map(node => node.id)).toEqual(['a', 'b']);
   });
 });
 

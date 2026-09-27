@@ -8,6 +8,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { ownGet } from './SafeObject.js';
+
 export interface PackageRequest {
   name: string;
   version?: string;
@@ -39,13 +41,23 @@ function parseVersion(input: string): [number, number, number] | null {
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
+function compareTuples(a: [number, number, number], b: [number, number, number]): number {
+  for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] - b[index];
+  return 0;
+}
+
 function rangeAllows(version: string, range: string): boolean {
   const candidate = parseVersion(version);
   const normalized = range.trim();
-  if (!candidate || !normalized || normalized === '*' || normalized === 'latest') return false;
+  if (!candidate || !normalized) return false;
+  // A wildcard or dist-tag accepts every version: treating it as unsatisfiable
+  // produced false-positive peer-dependency violations.
+  if (normalized === '*' || normalized === 'latest') return true;
   if (/^\^\d+\.\d+\.\d+$/.test(normalized)) {
     const base = parseVersion(normalized.slice(1))!;
-    return candidate[0] === base[0] && (candidate[0] > base[0] || candidate[1] > base[1] || candidate[1] === base[1] && candidate[2] >= base[2]);
+    // ^1.2.3 means >=1.2.3 <2.0.0, but ^0.2.3 means >=0.2.3 <0.3.0 and ^0.0.3 means >=0.0.3 <0.0.4.
+    const upper: [number, number, number] = base[0] > 0 ? [base[0] + 1, 0, 0] : base[1] > 0 ? [0, base[1] + 1, 0] : [0, 0, base[2] + 1];
+    return compareTuples(candidate, base) >= 0 && compareTuples(candidate, upper) < 0;
   }
   if (/^~\d+\.\d+\.\d+$/.test(normalized)) {
     const base = parseVersion(normalized.slice(1))!;
@@ -117,8 +129,8 @@ export async function lockfileSync(
   options: { writeLockfile?: (state: Record<string, string>) => Promise<void> } = {},
 ): Promise<{ inSync: boolean; changes: Array<{ name: string; expected?: string; actual?: string }>; written?: boolean; unsupported?: string }> {
   const changes = [...new Set([...Object.keys(expected), ...Object.keys(actual)])].sort()
-    .filter(name => expected[name] !== actual[name])
-    .map(name => ({ name, ...(expected[name] === undefined ? {} : { expected: expected[name] }), ...(actual[name] === undefined ? {} : { actual: actual[name] }) }));
+    .filter(name => ownGet(expected, name) !== ownGet(actual, name))
+    .map(name => ({ name, ...(ownGet(expected, name) === undefined ? {} : { expected: ownGet(expected, name) }), ...(ownGet(actual, name) === undefined ? {} : { actual: ownGet(actual, name) }) }));
   if (changes.length === 0) return { inSync: true, changes, written: false };
   if (!options.writeLockfile) return { inSync: false, changes, written: false, unsupported: 'Lockfile writes require a writeLockfile adapter' };
   await options.writeLockfile({ ...expected });
@@ -195,8 +207,8 @@ export async function packageSizeAnalyzer(
 export function peerDependencyValidator(
   peers: Record<string, string>, installed: Record<string, string>,
 ): Array<{ name: string; required: string; installed?: string }> {
-  return Object.entries(peers).filter(([name, range]) => !installed[name] || !rangeAllows(installed[name], range))
-    .map(([name, required]) => ({ name, required, ...(installed[name] === undefined ? {} : { installed: installed[name] }) }));
+  return Object.entries(peers).filter(([name, range]) => { const current = ownGet(installed, name); return !current || !rangeAllows(current, range); })
+    .map(([name, required]) => ({ name, required, ...(ownGet(installed, name) === undefined ? {} : { installed: ownGet(installed, name) }) }));
 }
 
 /** 311. Resolve workspace references and report missing workspace names. */
@@ -256,12 +268,12 @@ export async function privateRegistryAuth(
 /** 316. List all reachable transitive dependencies once. */
 export function transitiveDependencyLister(root: string, graph: Record<string, string[]>): string[] {
   const result = new Set<string>();
-  const pending = [...(graph[root] ?? [])];
+  const pending = [...(ownGet(graph, root) ?? [])];
   while (pending.length) {
     const name = pending.shift()!;
     if (name === root || result.has(name)) continue;
     result.add(name);
-    pending.push(...(graph[name] ?? []));
+    pending.push(...(ownGet(graph, name) ?? []));
   }
   return [...result].sort();
 }

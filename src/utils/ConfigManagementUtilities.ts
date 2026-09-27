@@ -1,6 +1,8 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { assignOwn, hasOwn, ownGet } from './SafeObject.js';
+
 export type ConfigValue = unknown;
 export type ConfigObject = Record<string, ConfigValue>;
 export type ConfigSource = ConfigObject | string;
@@ -42,9 +44,9 @@ function deepMerge(...layers: ConfigObject[]): ConfigObject {
   const result: ConfigObject = {};
   for (const layer of layers) {
     for (const [key, value] of Object.entries(layer)) {
-      const previous = result[key];
-      if (isPlainObject(previous) && isPlainObject(value)) result[key] = deepMerge(previous, value);
-      else result[key] = clone(value);
+      const previous = ownGet(result, key);
+      if (isPlainObject(previous) && isPlainObject(value)) assignOwn(result, key, deepMerge(previous, value));
+      else assignOwn(result, key, clone(value));
     }
   }
   return result;
@@ -55,24 +57,24 @@ function isPlainObject(value: unknown): value is ConfigObject {
 }
 
 function getAt(object: ConfigObject, dottedPath: string): unknown {
-  return dottedPath.split('.').reduce<unknown>((current, key) => isPlainObject(current) ? current[key] : undefined, object);
+  return dottedPath.split('.').reduce<unknown>((current, key) => isPlainObject(current) ? ownGet(current, key) : undefined, object);
 }
 
 function setAt(object: ConfigObject, dottedPath: string, value: unknown): void {
   const parts = dottedPath.split('.');
   let current = object;
   for (const part of parts.slice(0, -1)) {
-    if (!isPlainObject(current[part])) current[part] = {};
-    current = current[part] as ConfigObject;
+    if (!isPlainObject(ownGet(current, part))) assignOwn(current, part, {});
+    current = ownGet(current, part) as ConfigObject;
   }
-  current[parts[parts.length - 1]] = value;
+  assignOwn(current, parts[parts.length - 1], value);
 }
 
 /** 163. Deep-merge global, project, environment and explicit layers in precedence order. */
 export function mergeConfigLayers(...layers: ConfigObject[]): ConfigObject;
 export function mergeConfigLayers(layers: ConfigObject[], environment?: ConfigObject, explicit?: ConfigObject): ConfigObject;
 export function mergeConfigLayers(...args: ConfigObject[] | [ConfigObject[], ConfigObject?, ConfigObject?]): ConfigObject {
-  const layers = Array.isArray(args[0]) ? args[0] : args as ConfigObject[];
+  const layers = Array.isArray(args[0]) ? [...args[0]] : args as ConfigObject[];
   if (Array.isArray(args[0])) layers.push(...(args.slice(1) as ConfigObject[]).filter(Boolean));
   return deepMerge(...layers);
 }
@@ -99,10 +101,10 @@ export function validateConfigSchema(config: unknown, schema: ConfigObject): Con
     if (isPlainObject(value)) {
       const properties = isPlainObject(current.properties) ? current.properties : {};
       for (const required of Array.isArray(current.required) ? current.required : []) {
-        if (!(required in value)) errors.push({ path: at ? `${at}.${required}` : required, message: 'Required field is missing' });
+        if (!hasOwn(value, required)) errors.push({ path: at ? `${at}.${required}` : required, message: 'Required field is missing' });
       }
-      for (const [key, child] of Object.entries(properties)) if (key in value && isPlainObject(child)) check(value[key], child, at ? `${at}.${key}` : key);
-      if (current.additionalProperties === false) for (const key of Object.keys(value)) if (!(key in properties)) errors.push({ path: at ? `${at}.${key}` : key, message: 'Unknown field' });
+      for (const [key, child] of Object.entries(properties)) if (hasOwn(value, key) && isPlainObject(child)) check(value[key], child, at ? `${at}.${key}` : key);
+      if (current.additionalProperties === false) for (const key of Object.keys(value)) if (!hasOwn(properties, key)) errors.push({ path: at ? `${at}.${key}` : key, message: 'Unknown field' });
     }
     if (Array.isArray(value) && isPlainObject(current.items)) value.forEach((item, index) => check(item, current.items as ConfigObject, `${at}[${index}]`));
   };
@@ -300,9 +302,13 @@ export function configWatcher(
 /** 179. Check a config version against supported bounds. */
 export function configVersionChecker(version: unknown, options: { current: number; minimum?: number; maximum?: number } = { current: 1 }): { compatible: boolean; version?: number; reason?: string } {
   if (typeof version !== 'number' || !Number.isInteger(version)) return { compatible: false, reason: 'Config version must be an integer' };
-  if (options.minimum !== undefined && version < options.minimum) return { compatible: false, version, reason: `Config version ${version} is older than supported minimum ${options.minimum}` };
-  if (options.maximum !== undefined && version > options.maximum) return { compatible: false, version, reason: `Config version ${version} is newer than supported maximum ${options.maximum}` };
-  return version === options.current ? { compatible: true, version } : { compatible: false, version, reason: `Config version ${version} does not match current version ${options.current}` };
+  // Bounds default to `current`: older than current is unsupported, newer than
+  // current is unreadable, and an explicit bound widens that window.
+  const minimum = options.minimum ?? options.current;
+  const maximum = options.maximum ?? options.current;
+  if (version < minimum) return { compatible: false, version, reason: `Config version ${version} is older than supported minimum ${minimum}` };
+  if (version > maximum) return { compatible: false, version, reason: `Config version ${version} is newer than supported maximum ${maximum}` };
+  return { compatible: true, version };
 }
 
 /** 180. Return a defensive copy of defaults, optionally preserving selected runtime keys. */

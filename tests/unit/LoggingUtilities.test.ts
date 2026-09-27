@@ -207,6 +207,17 @@ describe('LoggingUtilities (500-functions category J)', () => {
     expect(logQueryHelper(entries, { limit: 0 })).toEqual([]);
   });
 
+  it('caps a limited query to the most recent matches', () => {
+    const entries = [
+      makeEntry({ level: 'info', message: 'first' }),
+      makeEntry({ level: 'info', message: 'second' }),
+      makeEntry({ level: 'info', message: 'third' }),
+    ];
+    expect(logQueryHelper(entries, { limit: 1 })).toEqual([entries[2]]);
+    expect(logQueryHelper(entries, { limit: 2 })).toEqual([entries[1], entries[2]]);
+    expect(logQueryHelper(entries, { limit: 9 })).toEqual(entries);
+  });
+
   it('returns expired log records as a cleanup plan without deleting anything', () => {
     const records = [makeEntry({ timestamp: 800 }), makeEntry({ timestamp: 900 }), makeEntry({ timestamp: 950 })];
     const result = logRetentionCleaner(records, { retentionMs: 100, now: () => 1_000 });

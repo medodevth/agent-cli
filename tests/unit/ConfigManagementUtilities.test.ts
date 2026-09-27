@@ -140,6 +140,9 @@ describe('ConfigManagementUtilities runtime and persistence', () => {
   it('checks supported config versions and resets to defaults while preserving selected paths', () => {
     expect(configVersionChecker(2, { current: 2 })).toMatchObject({ compatible: true, version: 2 });
     expect(configVersionChecker(3, { current: 2 }).compatible).toBe(false);
+    expect(configVersionChecker(1, { current: 2 }).compatible).toBe(false);
+    expect(configVersionChecker(3, { current: 1, minimum: 1, maximum: 5 })).toMatchObject({ compatible: true, version: 3 });
+    expect(configVersionChecker(6, { current: 1, minimum: 1, maximum: 5 }).compatible).toBe(false);
     expect(resetConfigToDefault({ model: 'default', debug: false }, { model: 'custom', debug: true }, { preserve: ['debug'] })).toEqual({ model: 'default', debug: true });
   });
 });

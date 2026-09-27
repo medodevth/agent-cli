@@ -20,19 +20,36 @@ const ALLOWED_ORIGINS = process.env.AGENT_SERVER_ORIGIN?.split(',').map(origin =
 
 app.use(cors(ALLOWED_ORIGINS ? { origin: ALLOWED_ORIGINS } : { origin: false }));
 app.use(express.json({ limit: '1mb' }));
-// Serve the web UI from <repo root>/public. Compiled output lives in dist/ and
-// the sources in src/, so exactly one level up is the project root in both cases.
-app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Baseline security headers (CSP when a web UI is served).
-app.use((_req: Request, res: Response, next: NextFunction) => {
+// Baseline security headers, registered before the static handler so documents
+// (not just API responses) actually receive them. The API keeps a locked-down
+// policy; the web UI is a single self-contained document (inline style/script)
+// served from this origin, so it needs a policy that lets those assets run.
+const STRICT_CSP = "default-src 'none'; frame-ancestors 'none'";
+const UI_CSP = [
+  "default-src 'none'",
+  "style-src 'unsafe-inline'",
+  "script-src 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
-  res.setHeader('Cache-Control', 'no-store');
+  const isHtml = req.path === '/' || req.path.endsWith('.html');
+  res.setHeader('Content-Security-Policy', isHtml ? UI_CSP : STRICT_CSP);
   next();
 });
+
+// Serve the web UI from <repo root>/public. Compiled output lives in dist/ and
+// the sources in src/, so exactly one level up is the project root in both cases.
+app.use(express.static(path.join(__dirname, '..', 'public')));
+// Bare root opens the UI instead of 404.
+app.get('/', (_req: Request, res: Response) => { res.redirect('/agent-ui.html'); });
 
 // Request log with IP + timestamp (security-relevant endpoints).
 app.use('/api', (req: Request, res: Response, next: NextFunction) => {
@@ -139,7 +156,7 @@ app.post('/api/agent/run', async (req, res) => {
   } finally { requestInProgress = false; }
 });
 
-app.get('/api/agent/status', (_req, res) => { if (!agent) { res.json({ status: 'not_initialized', tools: [] }); return; } const state = agent.getState(); res.json({ status: state.status, tools: agent.getToolRegistry().list().map(t => ({ name: t.name, description: t.description })), iterations: state.iterationCount, historyLength: state.history.length }); });
+app.get('/api/agent/status', (_req, res) => { const provider = config ? { model: config.model, provider: config.provider } : {}; if (!agent) { res.json({ status: 'not_initialized', tools: [], ...provider }); return; } const state = agent.getState(); res.json({ status: state.status, ...provider, tools: agent.getToolRegistry().list().map(t => ({ name: t.name, description: t.description })), iterations: state.iterationCount, historyLength: state.history.length }); });
 app.get('/api/agent/report', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const report = agent.getPerformanceMonitor().generateReport(); res.json({ overview: report.overview, slowestTools: report.slowestTools, mostUnreliable: report.mostUnreliable, recommendations: report.recommendations }); });
 app.get('/api/agent/metrics/:toolName', (req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const metrics = agent.getPerformanceMonitor().getToolMetrics(req.params.toolName); if (!metrics) { res.status(404).json({ error: 'Tool not found' }); return; } res.json({ ...metrics, errorTypes: Array.from(metrics.errorTypes.entries()) }); });
 app.get('/api/agent/export', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } res.setHeader('Content-Type', 'application/json'); res.setHeader('Content-Disposition', `attachment; filename=agent-metrics-${Date.now()}.json`); res.send(agent.exportPerformanceData()); });

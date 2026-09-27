@@ -495,7 +495,7 @@ export function exitCodeInterpreter(exitCode: number, signal?: string): ExitInte
 /** 116. POSIX single-quote escaping for embedding one arg in a shell string. */
 export function shellEscapeArg(arg: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg;
-  return `'${arg.replace(/'/g, `'\"'\"'`)}'`;
+  return `'${arg.replace(/'/g, `'"'"'`)}'`;
 }
 
 /** 117. Pipe stages together: stdout[i] becomes stdin[i+1]; rejects on first failing stage. */

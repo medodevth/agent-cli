@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { patchQueueManager } from '../../src/utils/PatchQueueUtilities.js';
 import {
   applyPatch,
   binaryDiffDetector,
@@ -55,7 +56,7 @@ describe('applyPatch (62)', () => {
 
   it('throws when the patch does not match', () => {
     expect(() => applyPatch('totally different\n', generateUnifiedDiff(BEFORE, AFTER))).toThrow(
-      /does not apply/,
+      /does not apply/
     );
   });
 });
@@ -198,6 +199,13 @@ describe('PatchQueueManager (75)', () => {
     expect(applied).toEqual({ id: id1, result: 'b\n' });
     expect(() => queue.applyNext('a\n')).toThrow(/empty/);
     expect(() => queue.enqueue('  ')).toThrow(/empty/);
+  });
+
+  it('supports the documented factory API', () => {
+    const queue = patchQueueManager();
+    const id = queue.enqueue(generateUnifiedDiff('a\n', 'b\n'));
+    expect(queue.pending()).toEqual([id]);
+    expect(queue.applyNext('a\n')).toEqual({ id, result: 'b\n' });
   });
 });
 

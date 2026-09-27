@@ -30,7 +30,7 @@ const PATTERNS: Array<{ kind: string; pattern: RegExp; minEntropy?: number }> = 
   { kind: 'private-key-block', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g },
   { kind: 'bearer-token', pattern: /\bBearer\s+[A-Za-z0-9._-]{16,}/gi },
   { kind: 'jwt', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g },
-  { kind: 'generic-api-key-assign', pattern: /\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|auth)\b\s*[:=]\s*['\"]?[A-Za-z0-9+/_-]{12,}['\"]?/gi },
+  { kind: 'generic-api-key-assign', pattern: /\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|auth)\b\s*[:=]\s*['"]?[A-Za-z0-9+/_-]{12,}['"]?/gi },
   { kind: 'env-style-secret', pattern: /^\s*(AWS_SECRET_ACCESS_KEY|STRIPE_SECRET_KEY|SENDGRID_API_KEY|MAIL_PASSWORD|DB_PASSWORD|REDIS_PASSWORD)\s*=\s*\S+/gm },
 ];
 

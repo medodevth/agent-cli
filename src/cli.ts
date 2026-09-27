@@ -199,7 +199,16 @@ function printBanner(config: Config) {
   console.log();
 }
 
-async function startChat(options: any) {
+interface CliOptions {
+  provider?: string;
+  model?: string;
+  permissionMode?: string;
+  maxIterations?: number;
+  workspace?: string;
+  automation?: boolean;
+}
+
+async function startChat(options: CliOptions) {
   const configLoader = new ConfigLoader();
   let config: Config;
 
@@ -303,7 +312,7 @@ async function startChat(options: any) {
   });
 }
 
-async function runTask(task: string, options: any) {
+async function runTask(task: string, options: CliOptions) {
   const configLoader = new ConfigLoader();
   let config: Config;
 

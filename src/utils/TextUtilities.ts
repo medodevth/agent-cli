@@ -65,7 +65,7 @@ export function wordWrap(text: string, maxWidth: number): string[] {
 /** 24. Levenshtein edit distance (case-sensitive), O(min(m,n)) memory. */
 export function levenshteinDistance(a: string, b: string): number {
   if (a === b) return 0;
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let current0 = i;
     let diag = prev[0];

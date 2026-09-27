@@ -116,7 +116,7 @@ export class PreExecutionGuard {
       return 'safe';
     }
     const cmd = String((toolCall.input as Record<string, unknown>)?.command ?? '').trim().toLowerCase();
-    if (/rm\s+-rf\s+[\/~]|mkfs|dd\s+if=|:\(\)\s*\{|curl.*\|\s*sh|wget.*\|\s*sh/.test(cmd)) return 'critical';
+    if (/rm\s+-rf\s+[~/]|mkfs|dd\s+if=|:\(\)\s*\{|curl.*\|\s*sh|wget.*\|\s*sh/.test(cmd)) return 'critical';
     if (/^rm\s+-[a-z]*r|^chmod\s+-R|^chown|git\s+reset\s+--hard|git\s+clean\s+-[df]|git\s+push\s+--force|npm\s+publish|docker\s+(run|rm)|pip\s+install/.test(cmd)) return 'high';
     if (/^(rm|mv|cp|chmod|npm\s+(install|i)|yarn\s+(add|install)|pnpm\s+(add|install)|git\s+(commit|push|rebase|merge))/.test(cmd)) return 'medium';
     if (/^(ls|pwd|cat|head|tail|echo|grep|find|which|node\s+--version|npm\s+test|npm\s+run|npx\s+tsc|git\s+(status|diff|log))/.test(cmd)) return 'safe';
@@ -604,7 +604,7 @@ export class OutputChecker {
     let text = output ?? '';
 
     for (const rule of SECRET_REDACT_PATTERNS) {
-      text = text.replace(rule.pattern, match => {
+      text = text.replace(rule.pattern, () => {
         redactions.push(rule.name);
         return `[REDACTED:${rule.name}]`;
       });

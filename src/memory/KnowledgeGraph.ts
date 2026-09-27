@@ -157,9 +157,7 @@ export class KnowledgeGraph {
       }
       // test files link to the symbol they exercise (name-based)
       if (/(\.test\.|\.spec\.|_test\.|__tests__)/.test(filePath)) {
-        for (const symbol of localSymbols) continue; // symbols defined in tests are test-local
-        const targetName = line.match(/(?:import|from)\s.*\b(\w+)\b/);
-        void targetName;
+        // test-local symbols: no cross-file links are emitted for test files
       }
       // resource hints
       for (const rule of RESOURCE_PATTERNS) {

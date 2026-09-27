@@ -1,6 +1,4 @@
 import { EventEmitter } from 'events';
-import * as fs from 'fs';
-import * as path from 'path';
 import {
   AgentState, ChatMessage, ContentBlock, ToolCall, ToolExecution, ToolResult,
   Config, AgentError, PermissionManager, ToolContext,

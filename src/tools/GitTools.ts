@@ -6,6 +6,10 @@ const execFileAsync = promisify(execFile);
 
 const MAX_BUFFER = 10 * 1024 * 1024;
 
+/** Input shapes of the git tools (mirror each tool's inputSchema). */
+interface GitDiffInput { staged?: boolean; file?: string }
+interface GitLogInput { limit?: number; file?: string }
+
 export class GitStatusTool implements Tool {
   name = 'git_status';
   description =
@@ -16,7 +20,7 @@ export class GitStatusTool implements Tool {
     properties: {},
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(_input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     try {
       const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
         cwd: context.workspaceRoot,
@@ -56,7 +60,7 @@ export class GitDiffTool implements Tool {
     },
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: GitDiffInput, context: ToolContext): Promise<ToolResult> {
     try {
       const args = ['diff'];
       if (input.staged) {
@@ -76,8 +80,8 @@ export class GitDiffTool implements Tool {
       }
 
       return { success: true, output: truncateLines(stdout, 1000) };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 }
@@ -101,7 +105,7 @@ export class GitLogTool implements Tool {
     },
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: GitLogInput, context: ToolContext): Promise<ToolResult> {
     try {
       const limit = Math.min(Math.max(Number(input.limit) || 10, 1), 100);
       const args = ['log', '--oneline', '-n', String(limit)];
@@ -120,8 +124,8 @@ export class GitLogTool implements Tool {
       }
 
       return { success: true, output: stdout };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 }

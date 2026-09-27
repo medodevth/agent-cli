@@ -10,7 +10,6 @@ import { runCaptured, truncateOutput } from './ShellTool.js';
  */
 
 type Input = Record<string, unknown>;
-const str = (input: Input, key: string): string => String(input[key] ?? '');
 
 async function allow(context: ToolContext, description: string, risk: 'low' | 'medium' | 'high'): Promise<ToolResult | null> {
   const permission = await context.permissions.check({ type: 'execute_command', description, risk });

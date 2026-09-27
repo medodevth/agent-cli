@@ -82,7 +82,7 @@ export class RunTestsTool implements Tool {
       const command = str(input, 'command') || await detectTestCommand(ws);
       const denied = await allowRun(context, `Run tests: ${command}`, 'low');
       if (denied) return denied;
-      const r = await runCaptured(command, { cwd: ws, timeout: (Number(input.timeout) || 300) * 1000, signal: context.signal });
+      const r = await runCaptured(command, { cwd: ws, timeout: Number(input.timeout) ? Number(input.timeout) * 1000 : QUALITY_TIMEOUT, signal: context.signal });
       const summary = parseTestOutput(r.stdout, r.stderr);
       const failedBlock = extractFailureBlock(r.stdout + '\n' + r.stderr);
       const status = !r.ok ? 'FAILED' : 'PASSED';

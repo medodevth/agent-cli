@@ -2,7 +2,6 @@ import * as fs from 'fs/promises';
 import * as nodeFs from 'fs';
 import * as path from 'path';
 import { Tool, ToolContext, ToolResult } from '../types/index.js';
-import { PathValidator } from './FileTools.js';
 import { runCaptured, truncateOutput } from './ShellTool.js';
 import { listWorkspaceFiles, readSource } from './CodeNavShared.js';
 

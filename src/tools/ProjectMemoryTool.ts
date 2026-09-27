@@ -82,11 +82,12 @@ export class ProjectMemoryTool implements Tool {
         await fs.appendFile(memoryPath, `\n${value.content.trim()}\n`, 'utf-8');
       }
       return { success: true, output: `${layer} memory updated: ${memoryLabel}` };
-    } catch (error: any) {
-      if (value.action === 'read' && error.code === 'ENOENT') {
+    } catch (error) {
+      const errno = error as NodeJS.ErrnoException;
+      if (value.action === 'read' && errno.code === 'ENOENT') {
         return { success: true, output: `(no ${layer} memory yet)` };
       }
-      return { success: false, error: error.message };
+      return { success: false, error: errno.message };
     }
   }
 }

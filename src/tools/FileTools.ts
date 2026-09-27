@@ -26,6 +26,12 @@ export const taskEditGuard = {
   },
 };
 
+/** Input shapes of the file tools (mirror each tool's inputSchema). */
+interface ListFilesInput { path?: string; recursive?: boolean; maxDepth?: number; excludePatterns?: string[] }
+interface ReadFileInput { path: string; startLine?: number; endLine?: number }
+interface WriteFileInput { path: string; content: string }
+interface EditFileInput { path: string; oldText: string; newText: string; replaceAll?: boolean }
+
 /** Shared workspace-path sanitizer for all file tools.
  *  Exported so sibling tool modules reuse the same rules. */
 export class PathValidator {
@@ -79,8 +85,8 @@ export class PathValidator {
     let canonicalWorkspace: string;
     try {
       canonicalWorkspace = await fs.realpath(absoluteWorkspace);
-    } catch (error: any) {
-      throw new WorkspaceError(`Workspace root is invalid: ${error.message}`);
+    } catch (error) {
+      throw new WorkspaceError(`Workspace root is invalid: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     let canonicalTarget: string;
@@ -112,11 +118,11 @@ export class PathValidator {
         relativeSuffix = relativeSuffix ? path.join(basename, relativeSuffix) : basename;
         pathToCheck = parent;
       }
-    } catch (error: any) {
+    } catch (error) {
       if (error instanceof WorkspaceError) {
         throw error;
       }
-      throw new WorkspaceError(`Cannot canonicalize path: ${error.message}`);
+      throw new WorkspaceError(`Cannot canonicalize path: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     const normalizedWorkspace = path.normalize(canonicalWorkspace + path.sep);
@@ -191,7 +197,7 @@ export class ListFilesTool implements Tool {
     },
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: ListFilesInput, context: ToolContext): Promise<ToolResult> {
     try {
       const targetPath = input.path || '.';
       const recursive = input.recursive ?? true;
@@ -222,8 +228,8 @@ export class ListFilesTool implements Tool {
         output: files.join('\n') || '(empty directory)',
         metadata: { count: files.length },
       };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -295,7 +301,7 @@ export class ReadFileTool implements Tool {
     required: ['path'],
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: ReadFileInput, context: ToolContext): Promise<ToolResult> {
     try {
       const validatedPath = await PathValidator.validatePath(input.path, context.workspaceRoot);
 
@@ -320,7 +326,7 @@ export class ReadFileTool implements Tool {
         if (end - start > 5000) throw new ToolError('Line range cannot exceed 5000 lines');
         const stream = nodeFs.createReadStream(validatedPath, { encoding: 'utf-8' });
         let lineNumber = 0;
-        let selected: string[] = [];
+        const selected: string[] = [];
         let selectedSize = 0;
         let pending = '';
         for await (const chunk of stream) {
@@ -359,11 +365,11 @@ export class ReadFileTool implements Tool {
           totalLines,
         },
       };
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return { success: false, error: 'File does not exist' };
       }
-      return { success: false, error: error.message };
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -404,7 +410,7 @@ export class WriteFileTool implements Tool {
     required: ['path', 'content'],
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: WriteFileInput, context: ToolContext): Promise<ToolResult> {
     try {      const validatedPath = await PathValidator.validatePath(input.path, context.workspaceRoot);
       await assertInsideWorkspace(validatedPath, context.workspaceRoot);
 
@@ -433,8 +439,8 @@ export class WriteFileTool implements Tool {
       let previousContent = '';
       try {
         previousContent = await fs.readFile(validatedPath, 'utf-8');
-      } catch (error: any) {
-        if (error.code !== 'ENOENT') throw error;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
       // Diff preview of the overwrite in metadata.
       const unifiedDiff = buildDiffSummary(previousContent, String(input.content));
@@ -456,8 +462,8 @@ export class WriteFileTool implements Tool {
           undoable: true,
         },
       };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 }
@@ -490,7 +496,7 @@ export class EditFileTool implements Tool {
     required: ['path', 'oldText', 'newText'],
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: EditFileInput, context: ToolContext): Promise<ToolResult> {
     try {
       const validatedPath = await PathValidator.validatePath(input.path, context.workspaceRoot);
 
@@ -567,8 +573,8 @@ export class EditFileTool implements Tool {
           removedLines: Math.max(0, -lineDelta),
         },
       };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 }

@@ -65,8 +65,8 @@ export class HttpRequestTool implements Tool {
       } finally {
         clearTimeout(timer);
       }
-    } catch (error: any) {
-      if (error?.name === 'AbortError') return { success: false, error: 'Request timed out after 30s' };
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return { success: false, error: 'Request timed out after 30s' };
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -79,7 +79,7 @@ export class FetchDocsTool implements Tool {
   description = 'Fetch documentation or OpenAPI spec from a public URL (docs site / raw.githubusercontent) and extract readable text. Blocks private hosts.';
   inputSchema = { type: 'object', properties: { url: { type: 'string' }, maxChars: { type: 'number' } }, required: ['url'] };
 
-  async execute(input: Input, context: ToolContext): Promise<ToolResult> {
+  async execute(input: Input, _context: ToolContext): Promise<ToolResult> {
     try {
       const parsed = new URL(str(input, 'url'));
       if (!['http:', 'https:'].includes(parsed.protocol)) return { success: false, error: 'http/https only' };
@@ -106,7 +106,7 @@ export class WebSearchForErrorTool implements Tool {
   description = 'Turn a raw error into effective web search queries (error name, code, framework hint) and return them as ready-to-use search URLs. The agent can then fetch promising results with fetch_docs.';
   inputSchema = { type: 'object', properties: { error: { type: 'string' }, context: { type: 'string', description: 'framework/language hint, e.g. "next.js", "python"' } }, required: ['error'] };
 
-  async execute(input: Input, context: ToolContext): Promise<ToolResult> {
+  async execute(input: Input, _context: ToolContext): Promise<ToolResult> {
     try {
       const raw = str(input, 'error').replace(/\s+/g, ' ').trim().slice(0, 300);
       if (!raw) return { success: false, error: 'error text is required' };

@@ -16,6 +16,9 @@ interface SearchResult {
   content: string;
 }
 
+/** Input shape of search_code (mirrors its inputSchema). */
+interface SearchInput { pattern?: string; regex?: boolean; caseSensitive?: boolean; directory?: string; filePattern?: string; maxResults?: number }
+
 export class SearchCodeTool implements Tool {
   name = 'search_code';
   description =
@@ -52,7 +55,7 @@ export class SearchCodeTool implements Tool {
     required: ['pattern'],
   };
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: SearchInput, context: ToolContext): Promise<ToolResult> {
     try {
       const pattern = String(input.pattern || '');
       if (!pattern) {
@@ -74,8 +77,8 @@ export class SearchCodeTool implements Tool {
       if (isRegex) {
         try {
           searchPattern = new RegExp(pattern, caseSensitive ? '' : 'i');
-        } catch (error: any) {
-          return { success: false, error: `Invalid regex: ${error.message}` };
+        } catch (error) {
+          return { success: false, error: `Invalid regex: ${error instanceof Error ? error.message : String(error)}` };
         }
       }
 
@@ -105,8 +108,8 @@ export class SearchCodeTool implements Tool {
           truncated: results.length >= maxResults,
         },
       };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 

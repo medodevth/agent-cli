@@ -105,7 +105,7 @@ export class ContextCompressor {
     const keepCount = Math.min(this.keepRecent, working.length - 1);
     const cutoff = Math.max(0, working.length - keepCount);
     const oldMessages = working.slice(0, cutoff);
-    let recentMessages = working.slice(cutoff).map(m => this.truncateBigResults(m));
+    const recentMessages = working.slice(cutoff).map(m => this.truncateBigResults(m));
 
     // Few messages, huge content: nothing old to fold — capping oversized
     // tool results in the tail is the compression that still makes progress.

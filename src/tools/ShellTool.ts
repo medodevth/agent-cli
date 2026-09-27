@@ -49,8 +49,9 @@ export async function runCaptured(command: string, options: { cwd: string; timeo
   try {
     const r = await runShellCommand(command, options);
     return { ok: true, ...r };
-  } catch (error: any) {
-    return { ok: false, stdout: error?.stdout ?? '', stderr: error?.stderr ?? error?.message ?? String(error), exitCode: error?.exitCode ?? 1 };
+  } catch (error) {
+    const failure = error as { stdout?: string; stderr?: string; message?: string; exitCode?: number };
+    return { ok: false, stdout: failure.stdout ?? '', stderr: failure.stderr ?? failure.message ?? String(error), exitCode: failure.exitCode ?? 1 };
   }
 }
 
@@ -59,6 +60,9 @@ export function truncateOutput(output: string, maxLines = 500): string {
   const lines = output.split('\n');
   return lines.length > maxLines ? lines.slice(0, maxLines).join('\n') + `\n\n[... truncated ${lines.length - maxLines} lines ...]` : output;
 }
+
+/** Input shape of run_command (mirrors its inputSchema). */
+interface ShellExecInput { command?: string; timeout?: number }
 
 export class ShellTool implements Tool {
   name = 'shell';
@@ -72,7 +76,7 @@ export class ShellTool implements Tool {
   /** Command-level safety: allowlist/blocklist/metachar/rate-limit/log. */
   shellSafety = new ShellSafety();
 
-  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+  async execute(input: ShellExecInput, context: ToolContext): Promise<ToolResult> {
     const command = String(input.command || '');
     try {
       if (!command.trim()) return { success: false, error: 'Command is required' };
@@ -111,9 +115,10 @@ export class ShellTool implements Tool {
       // Append-only command log with timestamp + outcome.
       await this.shellSafety.logExecution(context.workspaceRoot, { command, exitCode: result.exitCode, durationMs: Date.now() - startedAt, category: verdict.category });
       return { success: true, output: this.formatOutput(result.stdout, result.stderr), metadata: { command, exitCode: result.exitCode, sandboxed: result.sandboxed, category: verdict.category } };
-    } catch (error: any) {
-      try { await this.shellSafety.logExecution(context.workspaceRoot, { command, exitCode: error?.exitCode ?? 1, category: 'mutation' }); } catch { /* best-effort */ }
-      return { success: false, output: error.stdout || '', error: error.message || String(error), metadata: { command, exitCode: error.exitCode || 1 } };
+    } catch (error) {
+      const failure = error as { stdout?: string; stderr?: string; message?: string; exitCode?: number };
+      try { await this.shellSafety.logExecution(context.workspaceRoot, { command, exitCode: failure.exitCode ?? 1, category: 'mutation' }); } catch { /* best-effort */ }
+      return { success: false, output: failure.stdout || '', error: failure.message || String(error), metadata: { command, exitCode: failure.exitCode || 1 } };
     }
   }
 
@@ -157,7 +162,7 @@ export class ShellTool implements Tool {
     });
   }
 
-  private assessCommandRisk(command: string): 'safe' | 'low' | 'medium' | 'high' | 'critical' { const cmd = command.trim().toLowerCase(); if (/rm\s+-rf\s+[\/~]|sudo|dd\s+if=|mkfs|curl.*\|\s*sh|wget.*\|\s*sh/.test(cmd)) return 'critical'; if (/^rm\s+-r|chmod\s+-R|^chown|git\s+reset\s+--hard|git\s+clean\s+-[df]|docker\s+(run|rm)|npm\s+publish|pip\s+install/.test(cmd)) return 'high'; if (/^(rm|mv|cp|chmod|npm install|yarn install|git commit|git push|git rebase)/.test(cmd)) return 'medium'; if (/^(ls|pwd|cat|echo|git status|git diff|git log|npm test|npm run|node|python|grep|find|which)/.test(cmd)) return 'safe'; return 'low'; }
+  private assessCommandRisk(command: string): 'safe' | 'low' | 'medium' | 'high' | 'critical' { const cmd = command.trim().toLowerCase(); if (/rm\s+-rf\s+[~/]|sudo|dd\s+if=|mkfs|curl.*\|\s*sh|wget.*\|\s*sh/.test(cmd)) return 'critical'; if (/^rm\s+-r|chmod\s+-R|^chown|git\s+reset\s+--hard|git\s+clean\s+-[df]|docker\s+(run|rm)|npm\s+publish|pip\s+install/.test(cmd)) return 'high'; if (/^(rm|mv|cp|chmod|npm install|yarn install|git commit|git push|git rebase)/.test(cmd)) return 'medium'; if (/^(ls|pwd|cat|echo|git status|git diff|git log|npm test|npm run|node|python|grep|find|which)/.test(cmd)) return 'safe'; return 'low'; }
   private formatOutput(stdout: string, stderr: string): string { const parts = []; if (stdout.trim()) parts.push('STDOUT:\n' + this.truncateOutput(stdout)); if (stderr.trim()) parts.push('STDERR:\n' + this.truncateOutput(stderr)); return parts.join('\n\n') || '(no output)'; }
   private truncateOutput(output: string): string { const lines = output.split('\n'); return lines.length > 500 ? lines.slice(0, 500).join('\n') + `\n\n[... truncated ${lines.length - 500} lines ...]` : output; }
 }

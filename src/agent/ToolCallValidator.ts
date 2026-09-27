@@ -49,12 +49,12 @@ export class ToolCallValidator {
   }
 
   private static validateObject(
-    input: Record<string, any>,
+    input: Record<string, unknown>,
     schema: JSONSchema
   ): ValidationResult {
     const errors: string[] = [];
     const warnings: string[] = [];
-    const sanitizedInput: Record<string, any> = {};
+    const sanitizedInput: Record<string, unknown> = {};
 
     if (schema.required) {
       for (const field of schema.required) {
@@ -66,7 +66,7 @@ export class ToolCallValidator {
 
     if (schema.properties) {
       for (const [key, value] of Object.entries(input)) {
-        const propSchema = schema.properties[key] as any;
+        const propSchema = schema.properties[key] as (JSONSchema & { enum?: unknown[]; pattern?: string }) | undefined;
 
         if (!propSchema) {
           warnings.push(`Unknown field: ${key}`);
@@ -114,7 +114,7 @@ export class ToolCallValidator {
     return { valid: errors.length === 0, errors, warnings, sanitizedInput };
   }
 
-  private static validateArray(input: any[], schema: JSONSchema): ValidationResult {
+  private static validateArray(input: unknown[], schema: JSONSchema): ValidationResult {
     const errors: string[] = [];
     const warnings: string[] = [];
 
@@ -140,7 +140,7 @@ export class ToolCallValidator {
     return { valid: errors.length === 0, errors, warnings };
   }
 
-  private static sanitizeValue(value: any, schema: any): any {
+  private static sanitizeValue(value: unknown, schema: JSONSchema): unknown {
     if (schema.type === 'string' && typeof value === 'string') {
       return value.trim();
     }

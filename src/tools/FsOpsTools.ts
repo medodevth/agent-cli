@@ -133,8 +133,8 @@ export class DeleteFileTool implements Tool {
       }
       await fs.unlink(target);
       return ok(`Deleted ${str(input, 'path')} (${stat.size} bytes)`, { deletedSize: stat.size });
-    } catch (error: any) {
-      if (error?.code === 'ENOTEMPTY') return { success: false, error: 'Directory is not empty — delete files individually instead' };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOTEMPTY') return { success: false, error: 'Directory is not empty — delete files individually instead' };
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -200,7 +200,7 @@ export class DiffFilesTool implements Tool {
       const diffs = diffLines(aContent, bContent);
       if (!diffs.length) return ok(`${label}\nIdentical.`);
       return ok(`${label}\n${diffs.length} differing line(s):\n${diffs.slice(0, 80).join('\n')}${diffs.length > 80 ? `\n[... ${diffs.length - 80} more]` : ''}`, { diffCount: diffs.length });
-    } catch (error: any) {
+    } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }

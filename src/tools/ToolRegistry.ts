@@ -15,7 +15,7 @@
  * ```
  */
 
-import { Tool, ToolError } from '../types/index.js';
+import { Tool, ToolError, ToolSchema } from '../types/index.js';
 
 /**
  * Central registry for managing agent tools
@@ -80,11 +80,11 @@ export class ToolRegistry {
    *
    * @returns Array of tool schemas with name, description, and input schema
    */
-  getSchemas(): Array<{ name: string; description: string; input_schema: any }> {
+  getSchemas(): ToolSchema[] {
     return this.list().map(tool => ({
       name: tool.name,
       description: tool.description,
-      input_schema: tool.inputSchema,
+      input_schema: tool.inputSchema as ToolSchema['input_schema'],
     }));
   }
 }

@@ -74,7 +74,6 @@ const DANGEROUS_PATTERNS: Array<{ id: string; pattern: RegExp; why: string }> = 
 
 /** Shell metacharacters that only make sense inside a real shell. */
 const METACHARACTER_PATTERN = /[;&|`$<>\n]|\$\(|\|\|/;
-const METACHARACTER_ALLOWED_WITHIN_ARG = /^[\w./:=@%+,-]+$/;
 
 export class ShellSafety {
   private readonly allowlist: Set<string>;

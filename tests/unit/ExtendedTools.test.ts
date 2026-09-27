@@ -233,12 +233,14 @@ describe('DependencyTools', () => {
     expect(result.error).toContain('Suspicious');
   });
 
+  // Hits the live npm registry, so it needs far more headroom than the 15s
+  // suite default once other suites are competing for CPU.
   it('check_outdated_deps works on a package.json workspace', async () => {
     const ws = await tmpWorkspace();
     await fs.writeFile(path.join(ws, 'package.json'), JSON.stringify({ name: 't', version: '1.0.0', dependencies: { ms: '^2.0.0' } }));
     const result = await run(find(DEPENDENCY_TOOLS, 'check_outdated_deps'), {}, ws);
     expect(result.success).toBe(true); // may report outdated or up-to-date, must not crash
-  });
+  }, 90_000);
 });
 
 describe('BuildDeployTools', () => {

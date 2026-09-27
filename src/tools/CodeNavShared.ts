@@ -38,8 +38,8 @@ export async function readSource(ws: string, relPath: string): Promise<string> {
   }
   try {
     return await fs.readFile(abs, 'utf-8');
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') throw new Error(`File not found: ${relPath}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') throw new Error(`File not found: ${relPath}`);
     throw error;
   }
 }

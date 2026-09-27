@@ -24,11 +24,12 @@ function toLines(text: string): string[] {
 export function generateUnifiedDiff(
   before: string,
   after: string,
-  options?: { fileName?: string; context?: number },
+  options?: { fileName?: string; context?: number }
 ): string {
   const fileName = options?.fileName ?? 'file';
   const context = options?.context ?? 3;
-  if (!Number.isInteger(context) || context < 0) throw new Error('context must be a non-negative integer');
+  if (!Number.isInteger(context) || context < 0)
+    throw new Error('context must be a non-negative integer');
   if (before === after) return '';
   const a = toLines(before);
   const b = toLines(after);
@@ -152,8 +153,10 @@ function parsePatch(patch: string): PatchHunk[] {
       current = { aStart: 0, aCount: 0, bStart: 0, bCount: 0, lines: [] };
       hunks.push(current);
     }
-    if (rawLine.length === 0) continue; // trailing newline artifact, not a context line
-    else if (rawLine[0] === ' ' || rawLine[0] === '-' || rawLine[0] === '+') current.lines.push(rawLine);
+    if (rawLine.length === 0)
+      continue; // trailing newline artifact, not a context line
+    else if (rawLine[0] === ' ' || rawLine[0] === '-' || rawLine[0] === '+')
+      current.lines.push(rawLine);
     else if (rawLine === '\\ No newline at end of file') continue;
   }
   return hunks;
@@ -205,13 +208,16 @@ function joinLines(lines: string[], original: string): string {
 }
 
 /** Slide each hunk within ±fuzz lines looking for a context match. */
-function tryApplyWithFuzz(original: string[], hunks: PatchHunk[], fuzz: number): string[] | undefined {
+function tryApplyWithFuzz(
+  original: string[],
+  hunks: PatchHunk[],
+  fuzz: number
+): string[] | undefined {
   const out = [...original];
-  let drift = 0;
   for (const hunk of hunks) {
     let applied = false;
     for (let shift = 0; shift <= fuzz && !applied; shift++) {
-      for (const candidate of [hunk.aStart + drift + shift, hunk.aStart + drift - shift]) {
+      for (const candidate of [hunk.aStart + shift, hunk.aStart - shift]) {
         if (candidate < 0 || candidate > out.length) continue;
         const trial = applySingleHunk(out, hunk, candidate);
         if (trial) {
@@ -222,7 +228,6 @@ function tryApplyWithFuzz(original: string[], hunks: PatchHunk[], fuzz: number):
       }
     }
     if (!applied) return undefined;
-    void drift;
   }
   return out;
 }
@@ -261,10 +266,13 @@ export function reversePatch(patched: string, patch: string): string {
       return line;
     })
     .join('\n')
-    .replace(/^(@@ -\d+(?:,\d+)? \+)(\d+(?:,\d+)?)( @@.*)$/gm, (_m, left: string, _b: string, right: string) => {
-      void _b;
-      return `${left}${_b}${right}`;
-    });
+    .replace(
+      /^(@@ -\d+(?:,\d+)? \+)(\d+(?:,\d+)?)( @@.*)$/gm,
+      (_m, left: string, _b: string, right: string) => {
+        void _b;
+        return `${left}${_b}${right}`;
+      }
+    );
   return applyPatch(patched, reversed);
 }
 
@@ -299,7 +307,11 @@ export function diffStat(diff: string): { added: number; removed: number } {
 }
 
 /** 66. Best-effort three-way merge of base/ours/theirs line sets. */
-export function threeWayMerge(base: string, ours: string, theirs: string): { merged: string; conflicts: number } {
+export function threeWayMerge(
+  base: string,
+  ours: string,
+  theirs: string
+): { merged: string; conflicts: number } {
   const b = toLines(base);
   const o = toLines(ours);
   const t = toLines(theirs);
@@ -318,7 +330,13 @@ export function threeWayMerge(base: string, ours: string, theirs: string): { mer
       if (ourLine !== undefined) out.push(ourLine);
     } else {
       conflicts++;
-      out.push('<<<<<<< ours', ...(ourLine === undefined ? [] : [ourLine]), '=======', ...(theirLine === undefined ? [] : [theirLine]), '>>>>>>> theirs');
+      out.push(
+        '<<<<<<< ours',
+        ...(ourLine === undefined ? [] : [ourLine]),
+        '=======',
+        ...(theirLine === undefined ? [] : [theirLine]),
+        '>>>>>>> theirs'
+      );
     }
   }
   const trailing = base.endsWith('\n') || ours.endsWith('\n') || theirs.endsWith('\n') ? '\n' : '';
@@ -335,7 +353,10 @@ export function detectConflictMarkers(text: string): { hasConflicts: boolean; li
 }
 
 /** 68. Check whether a patch would apply without modifying anything. */
-export function patchValidator(original: string, patch: string): { valid: boolean; reason?: string } {
+export function patchValidator(
+  original: string,
+  patch: string
+): { valid: boolean; reason?: string } {
   if (!patch.trim()) return { valid: true };
   try {
     applyPatch(original, patch);
@@ -347,7 +368,8 @@ export function patchValidator(original: string, patch: string): { valid: boolea
 
 /** 69. Split a large diff into per-file chunks for review. */
 export function splitLargeDiff(diff: string, maxChars: number): string[] {
-  if (!Number.isInteger(maxChars) || maxChars < 1) throw new Error('maxChars must be a positive integer');
+  if (!Number.isInteger(maxChars) || maxChars < 1)
+    throw new Error('maxChars must be a positive integer');
   if (diff.length <= maxChars) return diff === '' ? [] : [diff];
   const chunks: string[] = [];
   const parts = diff.split(/(?=^diff --git |^--- )/m).filter(p => p !== '');
@@ -358,7 +380,8 @@ export function splitLargeDiff(diff: string, maxChars: number): string[] {
       current = '';
     }
     if (part.length > maxChars) {
-      for (let off = 0; off < part.length; off += maxChars) chunks.push(part.slice(off, off + maxChars));
+      for (let off = 0; off < part.length; off += maxChars)
+        chunks.push(part.slice(off, off + maxChars));
     } else {
       current += part;
     }
@@ -377,7 +400,8 @@ export function diffToCommitMessage(diff: string): string {
   }
   const onlyFile = files.size === 1 ? [...files][0].split('/').pop() : undefined;
   const scope = files.size === 1 ? `(${onlyFile})` : files.size > 1 ? `(${files.size} files)` : '';
-  const action = added > 0 && removed === 0 ? 'add' : removed > 0 && added === 0 ? 'remove' : 'update';
+  const action =
+    added > 0 && removed === 0 ? 'add' : removed > 0 && added === 0 ? 'remove' : 'update';
   const headline = `feat${scope}: ${action} ${added} insertion${added === 1 ? '' : 's'}, ${removed} deletion${removed === 1 ? '' : 's'}`;
   const fileList = [...files].slice(0, 5).join(', ');
   return fileList ? `${headline}\n\n${fileList}` : headline;
@@ -427,7 +451,8 @@ export function diffSummaryForHuman(diff: string): string {
     const match = line.match(/^[+-]{3} [ab]\/(.+)$/);
     if (match) files.add(match[1]);
   }
-  const filePart = files.size === 0 ? '' : ` across ${files.size} file${files.size === 1 ? '' : 's'}`;
+  const filePart =
+    files.size === 0 ? '' : ` across ${files.size} file${files.size === 1 ? '' : 's'}`;
   return `Changed ${added} line${added === 1 ? '' : 's'} added and ${removed} line${removed === 1 ? '' : 's'} removed${filePart}.`;
 }
 
@@ -435,6 +460,15 @@ export function diffSummaryForHuman(diff: string): string {
 export class PatchQueueManager {
   private queue: Array<{ id: string; patch: string }> = [];
   private nextId = 1;
+
+  static create(): PatchQueueManager {
+    return new PatchQueueManager();
+  }
+
+  /** Return a new independent queue (factory form listed in 500-functions.txt). */
+  static patchQueueManager(): PatchQueueManager {
+    return PatchQueueManager.create();
+  }
 
   enqueue(patch: string): string {
     if (!patch.trim()) throw new Error('patch must not be empty');
@@ -477,7 +511,8 @@ export async function rollbackToSnapshot(workspace: string, snapshotDir: string)
 
 /** 78. Reject diffs larger than maxChars (returns the reason instead of throwing). */
 export function diffSizeLimiter(diff: string, maxChars: number): { ok: boolean; reason?: string } {
-  if (!Number.isInteger(maxChars) || maxChars < 1) throw new Error('maxChars must be a positive integer');
+  if (!Number.isInteger(maxChars) || maxChars < 1)
+    throw new Error('maxChars must be a positive integer');
   if (diff.length <= maxChars) return { ok: true };
   return { ok: false, reason: `diff is ${diff.length} chars, limit is ${maxChars}` };
 }
@@ -496,7 +531,7 @@ export function whitespaceOnlyDiffDetector(before: string, after: string): boole
 /** 80. Heuristic logic-vs-format classifier for a before/after pair. */
 export function semanticDiffAnalyzer(
   before: string,
-  after: string,
+  after: string
 ): { logicChanged: boolean; reasons: string[] } {
   const reasons: string[] = [];
   if (before === after) return { logicChanged: false, reasons: ['identical'] };

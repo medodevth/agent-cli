@@ -1448,6 +1448,7 @@
       var SIDEBAR_MIN = 200;
       var SIDEBAR_MAX = 400;
       var FEED_LINGER_MS = 1500;
+      var RUN_POLL_INTERVAL_MS = 750;
       // Public deployments must set AGENT_SERVER_API_KEY. Keep the matching
       // value out of source control: ask the visitor once and retain it only
       // for this browser tab. Fetch requests use a header; EventSource and a
@@ -1503,6 +1504,47 @@
           return response;
         });
       };
+
+      // Koyeb (and other reverse proxies) can return an HTML error document on
+      // a slow upstream request. Keep that document out of the chat transcript
+      // and give the UI one predictable JSON-shaped result instead.
+      function apiErrorMessage(response) {
+        var status = response && typeof response.status === 'number' ? response.status : 0;
+        if (status === 401) return 'Access key rejected — enter the Agent CLI access key again.';
+        if (status === 409) return 'Another agent request is already running.';
+        if (status === 502 || status === 503 || status === 504) return 'The server is temporarily unavailable. The run may still be finishing; try again shortly.';
+        return status ? 'The server returned an unexpected response (HTTP ' + status + ').' : 'The server returned an unexpected response.';
+      }
+      function readAgentJson(response) {
+        var fallback = function () { return { ok: false, data: { error: apiErrorMessage(response) } }; };
+        var contentType = response && response.headers && typeof response.headers.get === 'function' ? (response.headers.get('content-type') || '') : '';
+        if (contentType && contentType.toLowerCase().indexOf('application/json') === -1) {
+          return typeof response.text === 'function'
+            ? response.text().catch(function () { return ''; }).then(fallback)
+            : Promise.resolve(fallback());
+        }
+        if (!response || typeof response.json !== 'function') return Promise.resolve(fallback());
+        return response.json()
+          .then(function (data) { return { ok: Boolean(response.ok), data: data }; })
+          .catch(fallback);
+      }
+      function delay(ms) { return new Promise(function (resolve) { window.setTimeout(resolve, ms); }); }
+      function waitForRun(jobId) {
+        return fetch('/api/agent/run/' + encodeURIComponent(jobId))
+          .then(readAgentJson)
+          .then(function (r) {
+            if (!r.ok) throw new Error((r.data && r.data.error) || 'Could not read the agent run');
+            var data = r.data || {};
+            if (data.status === 'completed') return data.result || {};
+            if (data.status === 'failed' || data.status === 'cancelled') {
+              throw new Error(data.error || 'Agent request failed');
+            }
+            if (data.status === 'queued' || data.status === 'running') {
+              return delay(RUN_POLL_INTERVAL_MS).then(function () { return waitForRun(jobId); });
+            }
+            throw new Error('Unknown agent run status');
+          });
+      }
 
       var state = {
         busy: false,
@@ -2182,6 +2224,40 @@
           '<span class="orbit">' + ico('sparkles', 'sm') + ico('loader-circle', 'sm') + ico('wand-sparkles', 'sm') + '</span>' +
           '<span>Agent is thinking…</span>');
       }
+      function renderRunResult(data) {
+        // A "New chat" during the request leaves no thread to append to.
+        if (!state.thread.length) {
+          state.currentId = 'c' + Date.now().toString(36);
+          setLayout(true);
+        }
+        var tools = data.toolExecutions || [];
+        var path = null;
+        tools.forEach(function (ex) {
+          if (path || !ex || typeof ex.input !== 'object' || ex.input === null) return;
+          path = ex.input.file || ex.input.path || ex.input.file_path || ex.input.filename || null;
+        });
+        var response = String(data.response || '');
+        var fence = response.match(/```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/);
+        var item = {
+          role: 'assistant',
+          text: response || '(no response)',
+          tools: tools,
+          meta: (tools.length ? tools.length + ' tool call' + (tools.length > 1 ? 's' : '') + ' · ' : '') + fmtDuration(data.duration)
+        };
+        if (fence) {
+          item.code = fence[2];
+          item.lang = fence[1] || 'text';
+          item.path = path;
+          item.title = tools.length ? tools[tools.length - 1].tool + ' result' : 'Result';
+          item.summary = tools.length ? tools.map(function (x) { return x.tool; }).slice(0, 6).join(', ') + ' executed.' : '';
+          item.ok = tools.length ? tools.every(function (x) { return !x.result || x.result.success !== false; }) : true;
+        }
+        pushMessage(item);
+        recordToolTimings(tools);
+        applyStats(data.stats, data.toolUsage, data.usage);
+        setStatus('ready', 'Ready');
+        finishActivityFeed();
+      }
       function send() {
         if (state.busy) return;
         var input = $('messageInput');
@@ -2225,43 +2301,17 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         })
-          .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, data: d }; }); })
+          .then(readAgentJson)
           .then(function (r) {
-            typing.remove();
             if (!r.ok) throw new Error((r.data && r.data.error) || 'Request failed');
             var data = r.data || {};
-            // A "New chat" during the request leaves no thread to append to.
-            if (!state.thread.length) {
-              state.currentId = 'c' + Date.now().toString(36);
-              setLayout(true);
-            }
-            var tools = data.toolExecutions || [];
-            var path = null;
-            tools.forEach(function (ex) {
-              if (path || !ex || typeof ex.input !== 'object' || ex.input === null) return;
-              path = ex.input.file || ex.input.path || ex.input.file_path || ex.input.filename || null;
-            });
-            var response = String(data.response || '');
-            var fence = response.match(/```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/);
-            var item = {
-              role: 'assistant',
-              text: response || '(no response)',
-              tools: tools,
-              meta: (tools.length ? tools.length + ' tool call' + (tools.length > 1 ? 's' : '') + ' · ' : '') + fmtDuration(data.duration)
-            };
-            if (fence) {
-              item.code = fence[2];
-              item.lang = fence[1] || 'text';
-              item.path = path;
-              item.title = tools.length ? tools[tools.length - 1].tool + ' result' : 'Result';
-              item.summary = tools.length ? tools.map(function (x) { return x.tool; }).slice(0, 6).join(', ') + ' executed.' : '';
-              item.ok = tools.length ? tools.every(function (x) { return !x.result || x.result.success !== false; }) : true;
-            }
-            pushMessage(item);
-            recordToolTimings(tools);
-            applyStats(data.stats, data.toolUsage, data.usage);
-            setStatus('ready', 'Ready');
-            finishActivityFeed();
+            // Support the former synchronous response during a rolling deploy,
+            // but use the new short-lived job request whenever it is available.
+            return data.jobId ? waitForRun(String(data.jobId)) : data;
+          })
+          .then(function (data) {
+            typing.remove();
+            renderRunResult(data || {});
           })
           .catch(function (err) {
             typing.remove();
@@ -2414,8 +2464,10 @@
       /** Detailed statistics: overview, token usage, per-tool timings and rates. */
       function loadReport() {
         return fetch('/api/agent/report')
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
+          .then(readAgentJson)
+          .then(function (r) {
+            if (!r.ok) return;
+            var d = r.data || {};
             if (!d || d.error) return;
             var o = d.overview || {};
             applyStats({
@@ -2757,7 +2809,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         })
-          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(readAgentJson)
           .then(function (r) {
             if (!r.ok) throw new Error((r.data && r.data.error) || 'Could not save settings');
             var d = r.data || {};
@@ -2789,8 +2841,10 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ clearApiKey: true })
         })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
+          .then(readAgentJson)
+          .then(function (r) {
+            if (!r.ok) throw new Error((r.data && r.data.error) || 'Could not clear the API key');
+            var d = r.data || {};
             state.settings.hasApiKey = Boolean(d.hasApiKey);
             paintSettingsBadges();
             paintProvider();
@@ -3084,7 +3138,9 @@
       $('exportBtn').onclick = function () { window.location = agentApiUrl('/api/agent/export'); };
       $('clearAgentBtn').onclick = function () {
         fetch('/api/agent/clear', { method: 'POST' })
-          .then(function () {
+          .then(readAgentJson)
+          .then(function (r) {
+            if (!r.ok) throw new Error((r.data && r.data.error) || 'Could not reset the agent');
             newChat();
             state.stats = {
               totalCalls: 0, successCalls: 0, avgDuration: 0, iterations: 0, modelCalls: null,
@@ -3093,7 +3149,7 @@
             state.toolUsage = {};
             state.toolTimings = {};
             paintStats();
-            toast('Agent reset', 'ok');
+            toast(r.data && r.data.cancelling ? 'Cancelling agent run' : 'Agent reset', 'ok');
           })
           .catch(function (e) { toast('Reset failed: ' + e.message, 'bad'); });
       };
@@ -3124,8 +3180,10 @@
 
       // Boot data: provider settings and the tool inventory.
       fetch('/api/agent/status')
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
+        .then(readAgentJson)
+        .then(function (r) {
+          if (!r.ok) throw new Error((r.data && r.data.error) || 'Cannot reach the agent server');
+          var d = r.data || {};
           if (d.model) state.model = d.model;
           state.tools = d.tools || [];
           paintModelName();
@@ -3141,8 +3199,10 @@
         });
 
       fetch('/api/agent/settings')
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
+        .then(readAgentJson)
+        .then(function (r) {
+          if (!r.ok) throw new Error((r.data && r.data.error) || 'Cannot read provider settings');
+          var d = r.data || {};
           state.settings = {
             model: d.model || '',
             baseUrl: d.baseUrl || '',

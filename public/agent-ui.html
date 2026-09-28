@@ -445,7 +445,10 @@
     /* ---------------------------------------------------------------
        Main column
        --------------------------------------------------------------- */
-    .main { display: flex; flex-direction: column; min-width: 0; background: var(--bg); transition: background-color .3s; }
+    .main {
+      display: flex; flex-direction: column; min-width: 0; min-height: 0;
+      background: var(--bg); transition: background-color .3s;
+    }
 
     .topbar {
       height: var(--topbar-h); flex: none;
@@ -492,7 +495,12 @@
     /* ---------------------------------------------------------------
        Chat scroll area
        --------------------------------------------------------------- */
-    .chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+    .chat {
+      flex: 1 1 auto; min-height: 0; height: 0; overflow-y: auto;
+      display: flex; flex-direction: column;
+      overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;
+      touch-action: pan-y; scrollbar-gutter: stable;
+    }
     .column { width: 100%; max-width: var(--column-w); margin: 0 auto; padding: 0 var(--sp-5); }
 
     .empty {
@@ -966,7 +974,20 @@
     }
     /* Below 900px the sidebar becomes an overlay drawer over a blurred backdrop. */
     @media (max-width: 900px) {
-      .app, .app.with-panel { grid-template-columns: minmax(0, 1fr); }
+      .app, .app.with-panel {
+        grid-template-columns: minmax(0, 1fr);
+        width: 100%; min-width: 0; min-height: 0; overflow: hidden;
+      }
+      .main { width: 100%; min-width: 0; min-height: 0; height: 100%; }
+      .topbar {
+        height: 56px; min-height: 56px;
+        padding-left: max(8px, env(safe-area-inset-left, 0px));
+        padding-right: max(8px, env(safe-area-inset-right, 0px));
+      }
+      .topbar-right { gap: 0; }
+      .icon-btn { width: 36px; height: 36px; }
+      .status-pill { margin-right: 2px; padding: 4px 8px; }
+      .chat { height: 0; flex: 1 1 auto; min-height: 0; }
       .sidebar {
         position: fixed; top: 0; bottom: 0; left: 0; z-index: 30;
         width: 264px; max-width: 84vw;
@@ -992,10 +1013,53 @@
         backdrop-filter: blur(8px);
       }
       .app.sidebar-collapsed .topbar-open { display: grid; }
-      .column { padding: 0 var(--sp-4); }
-      .composer-dock { padding: 0 var(--sp-4) calc(var(--sp-4) + env(safe-area-inset-bottom, 0px)); }
+      .column { padding-left: 14px; padding-right: 14px; }
+      .thread { gap: 18px; padding-top: 16px; padding-bottom: 20px; }
+      .msg { gap: 5px; }
+      .bubble {
+        max-width: calc(100% - 8px); padding: 10px 13px;
+        border-radius: 18px; font-size: 15px;
+      }
+      .answer { font-size: 15px; line-height: 1.65; }
+      .answer > * + * { margin-top: 9px; }
+      .tool-head { min-height: 42px; padding: 9px 11px; }
+      .tool-name { min-width: 0; overflow-wrap: anywhere; }
+      .tool-meta { gap: 5px; font-size: 10.5px; }
+      .result-card { padding: 12px; }
+      .rc-actions { flex-wrap: wrap; }
+      .rc-actions .btn { flex: 1 1 120px; }
+      .activity-head { min-height: 40px; }
+      .composer-dock {
+        max-width: none; padding: 8px 12px;
+        padding-left: max(12px, env(safe-area-inset-left, 0px));
+        padding-right: max(12px, env(safe-area-inset-right, 0px));
+        padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+        background: linear-gradient(to top, var(--bg) 72%, transparent);
+        z-index: 4;
+      }
+      .composer { border-radius: 22px; padding: 10px 11px 8px; }
+      .composer textarea { min-height: 26px; max-height: 132px; font-size: 16px; }
+      .composer-bar { align-items: flex-end; margin-top: 8px; }
+      .chips {
+        flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto;
+        scrollbar-width: none; -ms-overflow-style: none; padding-bottom: 1px;
+      }
+      .chips::-webkit-scrollbar { display: none; }
+      .chip { min-height: 34px; padding: 6px 9px; flex: none; }
+      .chip.round { width: 34px; height: 34px; }
+      .send { width: 36px; height: 36px; }
       .hero-title { font-size: 24px; }
-      .bubble { max-width: 92%; }
+      .empty { min-height: 100%; padding-top: 28px; padding-bottom: 20px; gap: 14px; }
+    }
+    @media (max-width: 480px) {
+      .topbar { padding-left: max(6px, env(safe-area-inset-left, 0px)); padding-right: max(6px, env(safe-area-inset-right, 0px)); }
+      .model-btn { padding-left: 8px; padding-right: 8px; }
+      .model-name { max-width: 18ch; }
+      .status-pill { width: 18px; height: 18px; min-width: 18px; padding: 0; border-radius: 50%; justify-content: center; }
+      .status-pill #statusText { display: none; }
+      .column { padding-left: 12px; padding-right: 12px; }
+      .msg.user .attach-chips { max-width: 100%; }
+      .codeblock pre { max-height: 300px; }
     }
   </style>
 </head>

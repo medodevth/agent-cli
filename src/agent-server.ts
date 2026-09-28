@@ -1,6 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
+import { timingSafeEqual } from 'crypto';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { Agent } from './agent/Agent.js';
@@ -68,13 +69,20 @@ function isLoopback(host: string): boolean {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1';
 }
 
+function hasValidApiKey(supplied: string | undefined): boolean {
+  if (!API_KEY || !supplied) return false;
+  const expected = Buffer.from(API_KEY);
+  const actual = Buffer.from(supplied);
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
 function securityMiddleware(req: Request, res: Response, next: NextFunction): void {
   const supplied = req.header('authorization')?.replace(/^Bearer\s+/i, '') || req.header('x-api-key') || (typeof req.query.token === 'string' ? req.query.token : undefined);
   if (!API_KEY && !isLoopback(HOST)) {
     res.status(503).json({ error: 'Server authentication is not configured' });
     return;
   }
-  if (API_KEY && supplied !== API_KEY) {
+  if (API_KEY && !hasValidApiKey(supplied)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }

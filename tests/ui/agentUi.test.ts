@@ -51,7 +51,7 @@ function extensionSnapshot(overrides: Record<string, any> = {}) {
   };
 }
 
-async function bootUi(options?: { seedStorage?: Record<string, string> }) {
+async function bootUi(options?: { seedStorage?: Record<string, string>; asyncRun?: boolean; htmlRunError?: boolean }) {
   const calls: ApiCall[] = [];
   const settings: Record<string, any> = {
     model: 'claude-sonnet-4',
@@ -66,6 +66,8 @@ async function bootUi(options?: { seedStorage?: Record<string, string> }) {
     for (const [k, v] of Object.entries(options.seedStorage)) stored.set(k, v);
   }
   let failNextRun = false;
+  const asyncRun = options?.asyncRun === true;
+  const htmlRunError = options?.htmlRunError === true;
   let failNextInstall = false;
 
   const virtualConsole = new VirtualConsole();
@@ -100,8 +102,32 @@ async function bootUi(options?: { seedStorage?: Record<string, string> }) {
           // be used by the page.
           return respondBad({ error: 'use EventSource' });
         }
+        if (u.includes('/api/agent/run/job-async')) {
+          return respond({
+            jobId: 'job-async', status: 'completed', result: {
+              response: ASSISTANT_REPLY,
+              duration: 1234,
+              toolExecutions: [
+                { tool: 'read_file', input: { path: 'src/utils/CacheUtilities.ts' }, result: { success: true, output: 'file contents' }, duration: 12 },
+                { tool: 'write_file', input: { path: 'src/utils/CacheUtilities.ts' }, result: { success: true, output: 'wrote 12 bytes' }, duration: 30, retryCount: 1 },
+              ],
+              stats: { totalCalls: 2, successCalls: 2, avgDuration: 40, iterations: 3, retries: 1, cacheHits: 2 },
+              usage: { inputTokens: 1200, outputTokens: 340, totalTokens: 1540 },
+              toolUsage: { read_file: 1, write_file: 1 },
+            },
+          });
+        }
         if (u.includes('/api/agent/run')) {
           if (failNextRun) { failNextRun = false; return respondBad({ error: 'Agent request failed' }); }
+          if (htmlRunError) {
+            return Promise.resolve({
+              ok: false,
+              status: 504,
+              headers: { get: () => 'text/html; charset=utf-8' },
+              text: () => Promise.resolve('<!DOCTYPE html><title>Gateway timeout</title>'),
+            });
+          }
+          if (asyncRun) return respond({ jobId: 'job-async', status: 'queued' });
           return respond({
             response: ASSISTANT_REPLY,
             duration: 1234,
@@ -175,7 +201,10 @@ async function bootUi(options?: { seedStorage?: Record<string, string> }) {
       (window as any).EventSource = FakeEventSource;
 
       window.alert = () => {};
-      window.prompt = () => { throw new Error('window.prompt must not be used'); };
+      window.prompt = (text: string) => {
+        if (text === 'Enter the Agent CLI access key') return 'test-access-key';
+        throw new Error('unexpected window.prompt: ' + text);
+      };
     },
   });
 
@@ -277,6 +306,31 @@ describe('web UI (agent-ui.html)', () => {
     expect($('mOutput').textContent).toBe('340');
     expect($('mTotalTokens').textContent).toBe('1,540');
     expect($('statusPill').className).toContain('ready');
+  });
+
+  it('waits for a background job instead of holding the original request open', async () => {
+    const { $, doc, tick, submit, type, calls } = await bootUi({ asyncRun: true });
+    type('build a landing page');
+    submit();
+    await tick(50);
+
+    const starts = calls.filter(c => c.url === '/api/agent/run' && c.method === 'POST');
+    expect(starts).toHaveLength(1);
+    expect(calls.some(c => c.url === '/api/agent/run/job-async')).toBe(true);
+    expect(doc.querySelectorAll('.answer').length).toBe(1);
+    expect($('statusPill').className).toContain('ready');
+  });
+
+  it('turns an HTML proxy error into a useful message instead of a JSON parse error', async () => {
+    const { doc, tick, submit, type } = await bootUi({ htmlRunError: true });
+    type('build a landing page');
+    submit();
+    await tick(4);
+
+    const answer = doc.querySelector('.answer')!.textContent || '';
+    expect(answer).toMatch(/temporarily unavailable/i);
+    expect(answer).not.toMatch(/Unexpected token/i);
+    expect(answer).not.toMatch(/DOCTYPE/i);
   });
 
   it('keeps model output escaped (no HTML injection)', async () => {

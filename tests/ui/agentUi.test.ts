@@ -860,4 +860,13 @@ describe('web UI (agent-ui.html)', () => {
     expect(html).toMatch(/height:\s*100vh;\s*\n\s*height:\s*100dvh/);
     expect(html).toMatch(/padding:[^;]*env\(safe-area-inset-bottom/);
   });
+
+  it('keeps the conversation independently scrollable on mobile', () => {
+    // The grid item must be allowed to shrink before the chat flex child can
+    // own the overflow. Without min-height: 0, long replies expand .main and
+    // body overflow is hidden, so touch scrolling appears to do nothing.
+    expect(html).toMatch(/\.main\s*\{[\s\S]*?min-height:\s*0/);
+    expect(html).toMatch(/\.chat\s*\{[\s\S]*?overflow-y:\s*auto/);
+    expect(html).toMatch(/\.chat\s*\{[\s\S]*?touch-action:\s*pan-y/);
+  });
 });

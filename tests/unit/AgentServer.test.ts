@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { Server } from 'http';
+import { jest } from '@jest/globals';
 import app from '../../src/agent-server.js';
 
 /**
@@ -40,6 +41,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Node's fetch keeps an idle TCP socket in its pool. Close idle and active
+  // test connections explicitly so the HTTP-surface test cannot leak a handle.
+  server.closeIdleConnections?.();
+  server.closeAllConnections?.();
   await new Promise<void>(resolve => server.close(() => resolve()));
   if (settingsBackup === null) {
     await fs.rm(SETTINGS_FILE, { force: true });
@@ -138,6 +143,45 @@ describe('agent server HTTP surface', () => {
     expect(badAttachments.status).toBe(400);
     const body: any = await badAttachments.json();
     expect(body.error).toMatch(/attachments/);
+
+    const badConfig = await fetch(`${base}/api/agent/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'hi', config: { retry: 'yes' } }),
+    });
+    expect(badConfig.status).toBe(400);
+    const badConfigBody: any = await badConfig.json();
+    expect(badConfigBody.error).toMatch(/config\.retry/);
+  });
+
+  it('starts an agent run as a short-lived job request', async () => {
+    // Never allow a real provider call during this HTTP-surface test. The job
+    // still proves that the POST returns immediately and can be polled.
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await fetch(`${base}/api/agent/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clearApiKey: true }),
+      });
+      const started = await fetch(`${base}/api/agent/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'do something' }),
+      });
+      expect(started.status).toBe(202);
+      const body: any = await started.json();
+      expect(typeof body.jobId).toBe('string');
+      expect(['queued', 'running', 'failed']).toContain(body.status);
+
+      const polled = await fetch(`${base}/api/agent/run/${body.jobId}`);
+      expect(polled.status).toBe(200);
+      const job: any = await polled.json();
+      expect(job.jobId).toBe(body.jobId);
+      expect(['queued', 'running', 'failed']).toContain(job.status);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('reports status with usage counters even before the agent exists', async () => {

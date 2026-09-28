@@ -1,7 +1,7 @@
 import express, { NextFunction, Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { timingSafeEqual } from 'crypto';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { Agent } from './agent/Agent.js';
@@ -269,6 +269,61 @@ const IMAGE_MIME = /^image\/(png|jpeg|jpg|gif|webp)$/i;
 
 type RawAttachment = { name?: unknown; mimeType?: unknown; data?: unknown };
 
+type ClientRunConfig = {
+  retry?: boolean;
+  cache?: boolean;
+  validation?: boolean;
+  recovery?: boolean;
+  debug?: boolean;
+};
+
+type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+interface AgentRunResult {
+  response: string;
+  duration: number;
+  toolExecutions: unknown[];
+  stats: {
+    totalCalls: number;
+    successCalls: number;
+    avgDuration: number;
+    iterations: number;
+    retries: number;
+    cacheHits: number;
+    modelCalls: number;
+  };
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+  toolUsage: Record<string, number>;
+}
+
+interface AgentRunJob {
+  id: string;
+  status: AgentRunStatus;
+  createdAt: number;
+  updatedAt: number;
+  result?: AgentRunResult;
+  error?: string;
+}
+
+// A request to a coding agent can take several model/tool rounds. Reverse
+// proxies are allowed to give up on that HTTP connection, so retain the run in
+// memory and let the UI poll its small status document instead of holding the
+// original response open until the model finishes.
+const runJobs = new Map<string, AgentRunJob>();
+const MAX_RUN_JOBS = 50;
+const RUN_JOB_TTL_MS = 30 * 60 * 1000;
+
+function pruneRunJobs(now = Date.now()): void {
+  for (const [id, job] of runJobs) {
+    if (job.updatedAt < now - RUN_JOB_TTL_MS) runJobs.delete(id);
+  }
+  if (runJobs.size <= MAX_RUN_JOBS) return;
+  const excess = Array.from(runJobs.values())
+    .sort((a, b) => a.updatedAt - b.updatedAt)
+    .slice(0, runJobs.size - MAX_RUN_JOBS);
+  for (const job of excess) runJobs.delete(job.id);
+}
+
 /**
  * Turns client-supplied attachments into provider content blocks. Images stay
  * base64 (both providers accept inline images); anything else is inlined as text
@@ -295,23 +350,26 @@ function toContentBlocks(raw: RawAttachment[]): ContentBlock[] {
   return blocks;
 }
 
-
-app.post('/api/agent/run', async (req, res) => {
+async function executeAgentRun(
+  job: AgentRunJob,
+  message: string,
+  clientConfig: ClientRunConfig | undefined,
+  contentBlocks: ContentBlock[]
+): Promise<void> {
+  let currentAgent: Agent | null = null;
+  job.status = 'running';
+  job.updatedAt = Date.now();
   try {
-    const { message, config: clientConfig, attachments } = req.body ?? {};
-    if (typeof message !== 'string' || !message.trim()) { res.status(400).json({ error: 'Message must be a non-empty string' }); return; }
-    if (message.length > 100_000) { res.status(413).json({ error: 'Message is too large (maximum 100000 characters)' }); return; }
-    if (clientConfig !== undefined && (typeof clientConfig !== 'object' || clientConfig === null || Array.isArray(clientConfig))) { res.status(400).json({ error: 'config must be an object' }); return; }
-    if (attachments !== undefined && !Array.isArray(attachments)) { res.status(400).json({ error: 'attachments must be an array' }); return; }
-    const contentBlocks = Array.isArray(attachments) ? toContentBlocks(attachments as RawAttachment[]) : [];
-    if (requestInProgress) { res.status(409).json({ error: 'Another agent request is already in progress' }); return; }
-    requestInProgress = true;
-    const currentAgent = getAgent();
-    if (clientConfig) currentAgent.updateConfig({
-      enableToolRetry: clientConfig.retry ?? true, enableToolCache: clientConfig.cache ?? true,
-      validateToolInputs: clientConfig.validation ?? true, autoRecovery: clientConfig.recovery ?? true,
-      debug: clientConfig.debug ?? false,
-    });
+    currentAgent = getAgent();
+    if (clientConfig) {
+      currentAgent.updateConfig({
+        enableToolRetry: clientConfig.retry ?? true,
+        enableToolCache: clientConfig.cache ?? true,
+        validateToolInputs: clientConfig.validation ?? true,
+        autoRecovery: clientConfig.recovery ?? true,
+        debug: clientConfig.debug ?? false,
+      });
+    }
     const startTime = Date.now();
     const response = await currentAgent.run(message, contentBlocks);
     const state = currentAgent.getState();
@@ -320,20 +378,81 @@ app.post('/api/agent/run', async (req, res) => {
     state.history.forEach(exec => { toolUsage[exec.tool] = (toolUsage[exec.tool] || 0) + 1; });
     const retries = state.history.reduce((sum, exec) => sum + (exec.retryCount ?? 0), 0);
     const cacheHits = state.history.filter(exec => exec.result?.cached).length;
-    res.json({
-      response, duration: Date.now() - startTime, toolExecutions: state.history.slice(-10),
+    job.result = {
+      response,
+      duration: Date.now() - startTime,
+      toolExecutions: state.history.slice(-10),
       stats: {
-        totalCalls: report.overview.totalExecutions, successCalls: report.overview.totalSuccess,
-        avgDuration: report.overview.avgExecutionTime, iterations: state.iterationCount,
-        retries, cacheHits, modelCalls,
+        totalCalls: report.overview.totalExecutions,
+        successCalls: report.overview.totalSuccess,
+        avgDuration: report.overview.avgExecutionTime,
+        iterations: state.iterationCount,
+        retries,
+        cacheHits,
+        modelCalls,
       },
       usage: currentAgent.getUsage(),
       toolUsage,
-    });
+    };
+    job.status = 'completed';
   } catch (error) {
+    const cancelled = currentAgent?.killed === true;
     console.error('Agent error:', error);
-    res.status(500).json({ error: publicError(error), ...(process.env.NODE_ENV === 'development' && error instanceof Error ? { stack: error.stack } : {}) });
-  } finally { requestInProgress = false; }
+    job.status = cancelled ? 'cancelled' : 'failed';
+    job.error = cancelled ? 'Agent run was cancelled' : publicError(error);
+  } finally {
+    job.updatedAt = Date.now();
+    // A kill switch is intentionally sticky inside Agent. Once the cancelled
+    // run has fully unwound, reset the session so a later request can start a
+    // fresh run instead of failing with AGENT_KILLED forever.
+    if (job.status === 'cancelled') currentAgent?.reset();
+    requestInProgress = false;
+    pruneRunJobs();
+    broadcast({ type: 'runComplete', jobId: job.id, status: job.status });
+  }
+}
+
+
+app.post('/api/agent/run', (req, res) => {
+  const { message, config: clientConfig, attachments } = req.body ?? {};
+  if (typeof message !== 'string' || !message.trim()) { res.status(400).json({ error: 'Message must be a non-empty string' }); return; }
+  if (message.length > 100_000) { res.status(413).json({ error: 'Message is too large (maximum 100000 characters)' }); return; }
+  if (clientConfig !== undefined && (typeof clientConfig !== 'object' || clientConfig === null || Array.isArray(clientConfig))) { res.status(400).json({ error: 'config must be an object' }); return; }
+  if (clientConfig) {
+    const keys: Array<keyof ClientRunConfig> = ['retry', 'cache', 'validation', 'recovery', 'debug'];
+    for (const key of keys) {
+      if (clientConfig[key] !== undefined && typeof clientConfig[key] !== 'boolean') {
+        res.status(400).json({ error: `config.${key} must be a boolean` });
+        return;
+      }
+    }
+  }
+  if (attachments !== undefined && !Array.isArray(attachments)) { res.status(400).json({ error: 'attachments must be an array' }); return; }
+  if (requestInProgress) { res.status(409).json({ error: 'Another agent request is already in progress' }); return; }
+
+  const contentBlocks = Array.isArray(attachments) ? toContentBlocks(attachments as RawAttachment[]) : [];
+  const now = Date.now();
+  const job: AgentRunJob = { id: randomUUID(), status: 'queued', createdAt: now, updatedAt: now };
+  runJobs.set(job.id, job);
+  pruneRunJobs(now);
+  requestInProgress = true;
+  void executeAgentRun(job, message, clientConfig as ClientRunConfig | undefined, contentBlocks);
+  res.status(202).json({ jobId: job.id, status: job.status });
+});
+
+app.get('/api/agent/run/:jobId', (req, res) => {
+  pruneRunJobs();
+  const job = runJobs.get(req.params.jobId);
+  if (!job) { res.status(404).json({ error: 'Run not found or expired' }); return; }
+  const payload: Record<string, unknown> = {
+    jobId: job.id,
+    status: job.status,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+  if (job.status === 'completed') payload.result = job.result;
+  if (job.status === 'failed' || job.status === 'cancelled') payload.error = job.error || 'Agent request failed';
+  res.json(payload);
 });
 
 app.get('/api/agent/status', (_req, res) => {
@@ -425,7 +544,18 @@ app.put('/api/agent/settings', (req, res) => {
 app.get('/api/agent/report', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const report = agent.getPerformanceMonitor().generateReport(); res.json({ overview: report.overview, slowestTools: report.slowestTools, mostUnreliable: report.mostUnreliable, recommendations: report.recommendations, usage: agent.getUsage(), modelCalls }); });
 app.get('/api/agent/metrics/:toolName', (req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } const metrics = agent.getPerformanceMonitor().getToolMetrics(req.params.toolName); if (!metrics) { res.status(404).json({ error: 'Tool not found' }); return; } res.json({ ...metrics, errorTypes: Array.from(metrics.errorTypes.entries()) }); });
 app.get('/api/agent/export', (_req, res) => { if (!agent) { res.json({ error: 'Agent not initialized' }); return; } res.setHeader('Content-Type', 'application/json'); res.setHeader('Content-Disposition', `attachment; filename=agent-metrics-${Date.now()}.json`); res.send(agent.exportPerformanceData()); });
-app.post('/api/agent/clear', (_req, res) => { if (!agent) { res.status(404).json({ error: 'Agent not initialized' }); return; } agent.reset(); modelCalls = 0; broadcast({ type: 'reset' }); res.json({ success: true }); });
+app.post('/api/agent/clear', (_req, res) => {
+  if (requestInProgress) {
+    agent?.kill('Run cancelled by reset request');
+    res.status(202).json({ success: true, cancelling: true });
+    return;
+  }
+  if (!agent) { res.status(404).json({ error: 'Agent not initialized' }); return; }
+  agent.reset();
+  modelCalls = 0;
+  broadcast({ type: 'reset' });
+  res.json({ success: true });
+});
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 /* ---------------- extensions: skills, MCP servers, plugins ---------------- */

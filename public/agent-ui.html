@@ -1448,6 +1448,61 @@
       var SIDEBAR_MIN = 200;
       var SIDEBAR_MAX = 400;
       var FEED_LINGER_MS = 1500;
+      // Public deployments must set AGENT_SERVER_API_KEY. Keep the matching
+      // value out of source control: ask the visitor once and retain it only
+      // for this browser tab. Fetch requests use a header; EventSource and a
+      // download navigation use the server's existing `token` query support.
+      var SERVER_ACCESS_KEY = 'agent-cli.server-access-key';
+      var serverAccessKey = '';
+      var serverAccessKeyPrompted = false;
+      var nativeFetch = window.fetch.bind(window);
+      try { serverAccessKey = window.sessionStorage.getItem(SERVER_ACCESS_KEY) || ''; } catch (e) { /* storage is optional */ }
+
+      function forgetServerAccessKey() {
+        serverAccessKey = '';
+        serverAccessKeyPrompted = false;
+        try { window.sessionStorage.removeItem(SERVER_ACCESS_KEY); } catch (e) { /* storage is optional */ }
+      }
+      function getServerAccessKey() {
+        if (serverAccessKey) return serverAccessKey;
+        if (serverAccessKeyPrompted) return '';
+        serverAccessKeyPrompted = true;
+        var entered = window.prompt('Enter the Agent CLI access key');
+        if (!entered || !entered.trim()) return '';
+        serverAccessKey = entered.trim();
+        try { window.sessionStorage.setItem(SERVER_ACCESS_KEY, serverAccessKey); } catch (e) { /* storage is optional */ }
+        return serverAccessKey;
+      }
+      function isAgentApiRequest(input) {
+        var raw = typeof input === 'string' ? input : input && input.url;
+        if (typeof raw !== 'string') return false;
+        try {
+          var url = new URL(raw, window.location.href);
+          return url.origin === window.location.origin && (url.pathname === '/api/agent' || url.pathname.indexOf('/api/agent/') === 0);
+        } catch (e) { return false; }
+      }
+      function agentApiUrl(path) {
+        var key = getServerAccessKey();
+        if (!key) return path;
+        var url = new URL(path, window.location.href);
+        url.searchParams.set('token', key);
+        return url.pathname + url.search + url.hash;
+      }
+      window.fetch = function (input, init) {
+        if (!isAgentApiRequest(input)) return nativeFetch(input, init);
+        var key = getServerAccessKey();
+        var options = init ? Object.assign({}, init) : {};
+        if (key) {
+          var inheritedHeaders = options.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined);
+          var headers = new Headers(inheritedHeaders || undefined);
+          headers.set('x-api-key', key);
+          options.headers = headers;
+        }
+        return nativeFetch(input, options).then(function (response) {
+          if (response.status === 401) forgetServerAccessKey();
+          return response;
+        });
+      };
 
       var state = {
         busy: false,
@@ -2031,7 +2086,7 @@
       function connectEvents() {
         if (typeof window.EventSource !== 'function') return;
         try {
-          var es = new window.EventSource('/api/agent/events');
+          var es = new window.EventSource(agentApiUrl('/api/agent/events'));
           es.onmessage = function (event) {
             var payload;
             try { payload = JSON.parse(event.data); } catch (e) { return; }
@@ -3026,7 +3081,7 @@
         $('panelBtn').classList.remove('on');
         $('panelBtn').setAttribute('aria-expanded', 'false');
       };
-      $('exportBtn').onclick = function () { window.location = '/api/agent/export'; };
+      $('exportBtn').onclick = function () { window.location = agentApiUrl('/api/agent/export'); };
       $('clearAgentBtn').onclick = function () {
         fetch('/api/agent/clear', { method: 'POST' })
           .then(function () {
